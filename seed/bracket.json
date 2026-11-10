@@ -1,0 +1,20 @@
+{
+  "example": true,
+  "locked": true,
+  "teams": [
+    {"id": "tex1", "name": "Night Owls (example)", "p1": "Example 1A", "p2": "Example 1B"},
+    {"id": "tex2", "name": "Koen Hunters (example)", "p1": "Example 2A", "p2": "Example 2B"},
+    {"id": "tex3", "name": "Farm Rats (example)", "p1": "Example 3A", "p2": "Example 3B"},
+    {"id": "tex4", "name": "Valley Ghosts (example)", "p1": "Example 4A", "p2": "Example 4B"},
+    {"id": "tex5", "name": "Red Zone (example)", "p1": "Example 5A", "p2": "Example 5B"},
+    {"id": "tex6", "name": "Last Exfil (example)", "p1": "Example 6A", "p2": "Example 6B"}
+  ],
+  "matches": {
+    "0-1": {"a": 842000, "b": 1310500, "kiaA": false, "kiaB": false, "map": "Farm", "time": "2026-12-05T12:00:00.000Z", "live": false, "tb": null},
+    "0-3": {"a": null, "b": null, "kiaA": false, "kiaB": false, "map": "Valley", "time": "2026-12-05T13:00:00.000Z", "live": true, "tb": null},
+    "1-0": {"a": null, "b": null, "kiaA": false, "kiaB": false, "map": "Northridge", "time": "2026-12-06T12:00:00.000Z", "live": false, "tb": null},
+    "1-1": {"time": "2026-12-06T13:00:00.000Z", "map": "Armory"},
+    "2-0": {"time": "2026-12-12T13:00:00.000Z", "map": "TV Station"}
+  },
+  "updatedAt": "2026-11-10T00:00:00.000Z"
+}
