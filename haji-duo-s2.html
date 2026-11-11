@@ -16,6 +16,10 @@
   --amber-ink: #1a1408;
   --extract: #7cc47f;
   --kia: #df6552;
+  --wheel-1: #253229;
+  --wheel-2: #3a3222;
+  --wheel-3: #1f2d2e;
+  --wheel-4: #33292a;
   --font-display: "Saira Condensed", "Arial Narrow", system-ui, sans-serif;
   --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
@@ -190,7 +194,33 @@ ol.rules li::marker { font-family: var(--font-mono); color: var(--amber); }
 .toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(20px + env(safe-area-inset-bottom, 0px)); background: var(--fg); color: var(--bg); padding: 9px 16px; border-radius: 3px; font-weight: 600; font-size: .9rem; z-index: 30; max-width: calc(100% - 32px); }
 .toast.err { background: var(--kia); color: var(--bg); }
 
+/* duo draw */
+.draw { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 24px; align-items: start; }
+.wheel-panel { display: grid; gap: 16px; justify-items: center; }
+.wheel-stage { position: relative; width: min(100%, 560px); aspect-ratio: 1; max-width: 100%; }
+.wheel-stage #wheel-host, .wheel-stage canvas { width: 100%; height: 100%; display: block; }
+.pointer { position: absolute; left: 50%; top: -6px; transform: translateX(-50%); width: 0; height: 0; border-left: 16px solid transparent; border-right: 16px solid transparent; border-top: 30px solid var(--amber); z-index: 2; filter: drop-shadow(0 2px 0 var(--bg)); }
+.reveal { min-height: 76px; display: grid; place-items: center; text-align: center; gap: 2px; width: 100%; }
+.reveal b { font-family: var(--font-display); font-size: clamp(1.8rem, 5vw, 2.8rem); font-weight: 800; text-transform: uppercase; line-height: 1; color: var(--amber); overflow-wrap: anywhere; }
+.reveal.spinning b { color: var(--muted); }
+.spin-controls { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+button.big { font-size: 1.25rem; padding: 12px 28px; letter-spacing: .12em; }
+.duo-list { display: grid; gap: 8px; }
+.duo-card { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 10px; align-items: center; padding: 10px 12px; border: 1px solid var(--line); border-radius: 3px; background: var(--panel-2); }
+.duo-card.open { border-color: var(--amber); }
+.duo-card .n { font-family: var(--font-mono); color: var(--amber); font-size: .85rem; }
+.duo-card .pl { overflow-wrap: anywhere; }
+.duo-card .pl i { font-style: normal; color: var(--muted); }
+.pool { display: flex; flex-wrap: wrap; gap: 6px; }
+.pool span { font-size: .85rem; padding: 3px 9px; border: 1px solid var(--line); border-radius: 2px; background: var(--panel-2); overflow-wrap: anywhere; }
+.pool span.gone { color: var(--muted); text-decoration: line-through; opacity: .6; }
+body.focus header.top, body.focus .banner, body.focus .draw-side-admin { display: none; }
+body.focus main { padding-block: 16px; }
+.focus-exit { display: none; }
+body.focus .focus-exit { display: inline-flex; }
+
 @media (max-width: 760px) {
+  .draw { grid-template-columns: minmax(0, 1fr); }
   .hero { grid-template-columns: minmax(0, 1fr); }
   .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .live-pill span { display: none; }
@@ -251,13 +281,14 @@ ol.rules li::marker { font-family: var(--font-mono); color: var(--amber); }
   const S = {
     db: null, user: null, uid: null, isAdmin: false, canWrite: null,
     dbOk: false, loading: true, slow: false, readOnlyHit: false,
-    config: null, bracket: null, regs: [], votes: [],
-    got: { config: false, bracket: false, regs: false, votes: false },
+    config: null, bracket: null, drawDoc: null, votes: [],
+    got: { config: false, bracket: false, draw: false, votes: false },
+    animating: null, lastSpinSeen: undefined, sound: false,
     draft: {}, modalKey: null,
   };
   const VIEWS = [
-    ["overview", "Overview"], ["bracket", "Bracket"], ["standings", "Standings"], ["schedule", "Schedule"],
-    ["register", "Register"], ["rules", "Rules & prizes"], ["hall-of-fame", "Hall of fame"], ["admin", "Admin"],
+    ["overview", "Overview"], ["draw", "Duo draw"], ["bracket", "Bracket"], ["standings", "Standings"], ["schedule", "Schedule"],
+    ["rules", "Rules & prizes"], ["hall-of-fame", "Hall of fame"], ["admin", "Admin"],
   ];
   let view = "overview";
   const cfg = () => S.config || {};
@@ -390,7 +421,7 @@ ol.rules li::marker { font-family: var(--font-mono); color: var(--amber); }
     const onErr = (e) => { console.warn(e); clearTimeout(slowTimer); S.loading = false; S.slow = true; render(); };
     db.doc("config/main").onSnapshot((s) => { S.config = s.exists ? s.data() : null; settle("config", s); }, onErr);
     db.doc("bracket/main").onSnapshot((s) => { S.bracket = s.exists ? s.data() : null; settle("bracket", s); if (S.modalKey) renderModal(); }, onErr);
-    db.collection("registrations").onSnapshot((q) => { S.regs = q.docs.map((d) => ({ id: d.id, ...d.data() })); settle("regs", q); }, onErr);
+    db.doc("draw/main").onSnapshot((s) => { S.drawDoc = s.exists ? s.data() : null; onDrawSnapshot(); settle("draw", s); }, onErr);
     db.collection("votes").onSnapshot((q) => { S.votes = q.docs.map((d) => ({ id: d.id, ...d.data() })); settle("votes", q); }, onErr);
   }
 
@@ -401,8 +432,9 @@ ol.rules li::marker { font-family: var(--font-mono); color: var(--amber); }
     if (ae && $("#main").contains(ae) && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) && ae.type !== "checkbox") { pendingRender = true; renderChrome(); return; }
     pendingRender = false;
     renderChrome();
-    const fn = { overview: vOverview, bracket: vBracket, standings: vStandings, schedule: vSchedule, register: vRegister, rules: vRules, "hall-of-fame": vHall, admin: vAdmin }[view] || vOverview;
+    const fn = { overview: vOverview, bracket: vBracket, standings: vStandings, schedule: vSchedule, draw: vDraw, rules: vRules, "hall-of-fame": vHall, admin: vAdmin }[view] || vOverview;
     $("#main").innerHTML = notices() + fn();
+    if (view === "draw") mountWheel();
     tick();
   }
   function renderChrome() {
@@ -416,9 +448,9 @@ ol.rules li::marker { font-family: var(--font-mono); color: var(--amber); }
   }
   function notices() {
     const out = [];
-    if (!S.loading && !S.dbOk) out.push(`<div class="banner"><b>Live data unavailable.</b> Open this page on claude.ai while signed in to see the bracket, results and registrations.</div>`);
+    if (!S.loading && !S.dbOk) out.push(`<div class="banner"><b>Live data unavailable.</b> Open this page on claude.ai while signed in to see the duo draw, bracket and results.</div>`);
     else if (S.slow) out.push(`<div class="banner"><b>Can't reach the live data right now.</b> What you see may be out of date; it updates on its own once the connection returns.</div>`);
-    if (S.bracket && S.bracket.example) out.push(`<div class="banner"><b>Example bracket.</b> These duos and results are sample data so you can see how the page works.${S.isAdmin ? " Clear them in Admin → Teams when real registrations come in." : ""}</div>`);
+    if (S.bracket && S.bracket.example) out.push(`<div class="banner"><b>Example bracket.</b> These duos and results are sample data so you can see how the page works.${S.isAdmin ? " They are replaced when you send the drawn duos to the bracket." : ""}</div>`);
     if (S.isAdmin && cfg().placeholder) out.push(`<div class="banner"><b>Placeholder event info.</b> Dates, prizes, rules and Season 1 champions are sample text. Edit them in Admin → Event info.</div>`);
     return out.join("");
   }
@@ -433,7 +465,7 @@ ol.rules li::marker { font-family: var(--font-mono); color: var(--amber); }
     const doneCount = allMatches(c).filter((m) => m.status === "done").length;
     const total = log.reduce((s, x) => s + x.loot, 0);
     const best = log.slice().sort((a, b) => b.loot - a.loot);
-    const regOpen = C.registrationOpen !== false;
+    const D = drawState();
     const nu = c ? nextUp(c) : { live: [], upcoming: [] };
     return `
     <section class="hero">
@@ -442,7 +474,7 @@ ol.rules li::marker { font-family: var(--font-mono); color: var(--amber); }
         <h1>${esc(C.title || "Haji Duo Tournament")}<em>Season ${esc(C.season || 2)}</em></h1>
         ${C.tagline ? `<p class="tag">${esc(C.tagline)}</p>` : ""}
         <div class="cta">
-          ${regOpen ? `<a class="btn primary" href="#register">Register your duo</a>` : ""}
+          <a class="btn primary" href="#draw">${D.duos.length && !D.remaining.length ? "See the drawn duos" : "Watch the duo draw"}</a>
           <a class="btn" href="#bracket">View bracket</a>
           <a class="btn" href="#rules">Rules</a>
         </div>
@@ -450,7 +482,7 @@ ol.rules li::marker { font-family: var(--font-mono); color: var(--amber); }
       ${countdownBlock(c)}
     </section>
     <section class="stats">
-      <div class="stat"><div class="label">Duos registered</div><b>${S.regs.length}</b><small>${regOpen ? "Registration open" : "Registration closed"}</small></div>
+      <div class="stat"><div class="label">Players in pool</div><b>${D.pool.length}</b><small>${D.duos.filter((x) => x.p2).length} duos drawn · ${D.remaining.length} left</small></div>
       <div class="stat"><div class="label">In the bracket</div><b>${c ? c.teams.length : (S.bracket?.teams?.length || 0)}</b><small>${c ? `${c.size}-slot bracket · ${c.R} rounds` : "Bracket not drawn yet"}</small></div>
       <div class="stat"><div class="label">Raids settled</div><b>${doneCount}</b><small>of ${c ? c.size - 1 - allMatches(c).filter((m) => m.status === "bye").length : 0} head-to-heads</small></div>
       <div class="stat"><div class="label">Loot extracted</div><b>${compact(total)}</b><small>Koen across all raids</small></div>
@@ -480,13 +512,15 @@ ol.rules li::marker { font-family: var(--font-mono); color: var(--amber); }
     if (c && c.champion) return `<div class="countdown"><div class="label">Season ${esc(C.season || 2)} champions</div><div class="champ-card"><b>${teamLabel(c.champion)}</b><span class="muted">${players(c.champion)}</span></div><a class="btn" href="#hall-of-fame">Hall of fame</a></div>`;
     if (nu.live.length) { const m = nu.live[0]; return `<div class="countdown"><div class="label">${esc(m.name)}${m.res.map ? " · " + esc(m.res.map) : ""}</div><div class="cd-live">Raid in progress</div><p>${teamLabel(m.A.team)} <span class="muted">vs</span> ${teamLabel(m.B.team)}</p><button data-act="match" data-key="${m.key}">Open match</button></div>`; }
     let target = null, label = "";
-    if (nu.upcoming.length) { target = nu.upcoming[0].res.time; label = `Next raid · ${nu.upcoming[0].name}`; }
+    const D = drawState();
+    if (validDate(C.drawAt) > Date.now() && (D.remaining.length || !D.pool.length)) { target = C.drawAt; label = "Live duo draw in"; }
+    else if (nu.upcoming.length) { target = nu.upcoming[0].res.time; label = `Next raid · ${nu.upcoming[0].name}`; }
     else if (validDate(C.startsAt) && validDate(C.startsAt) > Date.now()) { target = C.startsAt; label = "Tournament starts in"; }
     if (!target) return `<div class="countdown"><div class="label">Countdown</div><p class="muted">The countdown starts once a start time or the first raid is scheduled.</p></div>`;
     return `<div class="countdown"><div class="label">${esc(label)}</div>
       <div class="cd-digits" data-countdown="${esc(target)}"><div><b>--</b><span>Days</span></div><div><b>--</b><span>Hrs</span></div><div><b>--</b><span>Min</span></div><div><b>--</b><span>Sec</span></div></div>
       <p class="muted mono" style="font-size:.85rem">${esc(fmtDT(target))}</p>
-      ${C.registrationClosesAt && validDate(C.registrationClosesAt) > Date.now() ? `<p class="hint">Registration closes ${esc(fmtDT(C.registrationClosesAt))}</p>` : ""}</div>`;
+</div>`;
   }
   function tick() {
     for (const el of document.querySelectorAll("[data-countdown]")) {
@@ -537,7 +571,7 @@ ol.rules li::marker { font-family: var(--font-mono); color: var(--amber); }
   }
   function vBracket() {
     const c = compute();
-    if (!c) return `<section class="panel"><div class="panel-head"><h2>Bracket</h2></div><div class="empty"><b>Bracket not drawn yet</b><span>It appears once the organizer adds at least two duos. ${S.regs.length} duo${S.regs.length === 1 ? "" : "s"} registered so far.</span>${S.isAdmin ? `<a class="btn primary" href="#admin">Add duos in Admin</a>` : `<a class="btn" href="#register">Register your duo</a>`}</div></section>`;
+    if (!c) return `<section class="panel"><div class="panel-head"><h2>Bracket</h2></div><div class="empty"><b>Bracket not drawn yet</b><span>It appears once the duos are drawn on the spin wheel and sent to the bracket.</span><a class="btn primary" href="#draw">Go to the duo draw</a></div></section>`;
     const cols = c.rounds.map((rd, r) => {
       const groups = [];
       if (rd.length === 1) groups.push(`<div class="pair"><div class="cell">${matchCard(rd[0])}</div></div>`);
@@ -593,42 +627,167 @@ ol.rules li::marker { font-family: var(--font-mono); color: var(--amber); }
     return `<section class="panel"><div class="panel-head"><h2>Schedule</h2><span class="hint">Times shown in your local time zone</span></div>${html}</section>`;
   }
 
-  // ----- register -----
-  function vRegister() {
-    const C = cfg(); const open = C.registrationOpen !== false;
-    const mine = S.uid ? S.regs.find((r) => r.id === S.uid) : null;
-    const inBracket = mine && S.bracket && (S.bracket.teams || []).some((t) => t.regUid === S.uid);
-    let form;
-    if (!S.dbOk) form = `<div class="empty"><b>Registration needs live data</b><span>Open this page on claude.ai while signed in.</span></div>`;
-    else if (!S.uid) form = `<div class="empty"><b>Sign in to register</b><span>Registration is tied to your claude.ai account so you can edit or withdraw it later.</span></div>`;
-    else if (!open && !mine) form = `<div class="empty"><b>Registration is closed</b><span>Ask the organizer if you still want in.</span></div>`;
-    else {
-      const v = (k, d) => esc(draft("reg-" + k, (mine && mine[k]) || d || ""));
-      form = `<form id="reg-form" class="stack" novalidate>
-        ${mine ? `<div class="banner">${inBracket ? `<b>You're in the bracket.</b> Your duo has a seed. Changes below update your registration only; ask the organizer to change your bracket entry.` : `<b>Registration received.</b> The organizer will add your duo to the bracket.`}</div>` : ""}
-        <label class="field"><span>Duo name</span><input id="reg-name" maxlength="32" required value="${v("name")}" placeholder="e.g. Koen Hunters"></label>
-        <div class="form-grid">
-          <label class="field"><span>Player 1 · in-game name</span><input id="reg-p1" maxlength="32" required value="${v("p1")}"></label>
-          <label class="field"><span>Player 2 · in-game name</span><input id="reg-p2" maxlength="32" required value="${v("p2")}"></label>
-        </div>
-        <label class="field"><span>Contact (Discord or WhatsApp handle)</span><input id="reg-contact" maxlength="60" value="${v("contact")}"><small class="hint">Everyone who opens this page can see it.</small></label>
-        <label class="field"><span>Note to organizer (optional)</span><input id="reg-note" maxlength="140" value="${v("note")}" placeholder="Availability, time zone…"></label>
-        <p class="hint" id="reg-err" hidden></p>
-        <div class="form-actions">
-          <button class="primary" type="submit" ${S.readOnlyHit ? "disabled" : ""}>${mine ? "Update registration" : "Register duo"}</button>
-          ${mine && !inBracket ? `<button type="button" class="danger" data-act="withdraw">Withdraw</button>` : ""}
-        </div>
-      </form>`;
-    }
-    return `<section class="grid-2">
-      <div class="panel"><div class="panel-head"><h2>Register your duo</h2>${open ? `<span class="chip done">Open</span>` : `<span class="chip kia">Closed</span>`}</div>${form}</div>
-      <div class="panel"><div class="panel-head"><h3>Registered duos</h3><span class="mono muted">${S.regs.length}</span></div>
-        ${S.regs.length ? `<div class="list">${S.regs.slice().sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt))).map((r) => {
-          const inB = (S.bracket?.teams || []).some((t) => t.regUid === r.id);
-          return `<div class="row"><div class="grow"><b>${esc(r.name)}</b><div class="muted" style="font-size:.85rem">${esc(r.p1)} & ${esc(r.p2)}</div></div>${inB ? `<span class="chip done">In bracket</span>` : `<span class="chip">Pending</span>`}</div>`;
-        }).join("")}</div>` : `<div class="empty"><b>No duos yet</b><span>Be the first to sign up for Season ${esc(C.season || 2)}.</span></div>`}
-      </div></section>`;
+  // ----- duo draw -----
+  function drawState() {
+    const d = S.drawDoc || {};
+    const pool = Array.isArray(d.pool) ? d.pool : [];
+    const duos = Array.isArray(d.duos) ? d.duos : [];
+    const byId = new Map(pool.map((p) => [p.id, p]));
+    const used = new Set(duos.flatMap((x) => [x.p1, x.p2]).filter(Boolean));
+    const remaining = pool.filter((p) => !used.has(p.id));
+    const last = duos[duos.length - 1];
+    const open = last && !last.p2 ? last : null;
+    return { d, pool, duos, byId, remaining, open, spin: d.spin || null };
   }
+  const pname = (D, id) => (D.byId.get(id) || {}).name || "?";
+  function vDraw() {
+    const D = drawState();
+    const hidden = S.animating && D.spin && S.animating === D.spin.id ? D.spin.pick : null;
+    const shown = (id) => (id && id !== hidden ? esc(pname(D, id)) : "<i>???</i>");
+    const remainingShown = D.remaining.length + (hidden ? 1 : 0);
+    const complete = D.duos.filter((x) => x.p2 && x.p2 !== hidden).length;
+    const nextLabel = D.open ? `Spin partner for ${esc(D.open.name)}` : `Spin · Duo ${D.duos.length + 1}`;
+    let reveal;
+    if (S.animating) reveal = `<div class="reveal spinning" id="reveal"><span class="label">Spinning…</span><b>?</b></div>`;
+    else if (D.spin) {
+      const duo = D.duos.find((x) => x.p1 === D.spin.pick || x.p2 === D.spin.pick);
+      reveal = `<div class="reveal" id="reveal"><span class="label">${duo ? esc(duo.name) + (duo.p2 === D.spin.pick ? " · partner" : " · first pick") : "Last pick"}</span><b>${esc(pname(D, D.spin.pick))}</b></div>`;
+    } else reveal = `<div class="reveal" id="reveal"><span class="label">${D.pool.length ? "Ready to draw" : "Waiting for players"}</span></div>`;
+    const oddWarn = !D.open && D.remaining.length === 1 ? `<p class="hint" style="color:var(--amber)">One player is left without a partner. Add a player to the pool or remove one.</p>` : "";
+    const admin = S.isAdmin ? `
+      <div class="spin-controls">
+        <button class="primary big" data-act="spin" ${!D.remaining.length || S.animating ? "disabled" : ""}>${D.remaining.length ? nextLabel : "Draw complete"}</button>
+      </div>
+      <div class="spin-controls">
+        <button class="small" data-act="undo-spin" ${!D.duos.length || S.animating ? "disabled" : ""}>Undo last pick</button>
+        <button class="small" data-act="sound" aria-pressed="${S.sound}">Sound ${S.sound ? "on" : "off"}</button>
+        <button class="small" data-act="focus">Stream mode</button>
+        <button class="small focus-exit" data-act="focus">Exit stream mode</button>
+      </div>${oddWarn}` : `
+      <div class="spin-controls"><button class="small" data-act="sound" aria-pressed="${S.sound}">Sound ${S.sound ? "on" : "off"}</button><button class="small" data-act="focus">Full view</button><button class="small focus-exit" data-act="focus">Exit full view</button></div>
+      <p class="hint">The organizer spins live. Keep this page open to watch each pick land.</p>`;
+    const duoCards = D.duos.length ? D.duos.map((x, i) => `<div class="duo-card ${x === D.open || x.p2 === hidden ? "open" : ""}"><span class="n">#${i + 1}</span><div class="pl"><b>${esc(x.name)}</b><div>${shown(x.p1)} <span class="muted">&amp;</span> ${x.p2 ? shown(x.p2) : "<i>waiting for spin</i>"}</div></div></div>`).join("")
+      : `<div class="empty"><b>No duos yet</b><span>Each spin pulls one player off the wheel. Two picks make a duo.</span></div>`;
+    const poolChips = D.pool.length ? `<div class="pool">${D.pool.map((p) => `<span class="${D.remaining.includes(p) || p.id === hidden ? "" : "gone"}">${esc(p.name)}</span>`).join("")}</div>` : `<p class="hint">No players in the pool yet.</p>`;
+    const poolText = D.pool.map((p) => p.name).join("\n");
+    const adminSide = S.isAdmin ? `
+      <div class="panel draw-side-admin"><div class="panel-head"><h3>Player pool</h3><span class="hint">One in-game name per line</span></div>
+        <form id="pool-form" class="stack">
+          <textarea id="pool-text" style="min-height:160px" placeholder="Player names, one per line">${esc(draft("pool-text", poolText))}</textarea>
+          <div class="form-actions"><button class="primary" type="submit">Save pool</button><span class="hint">Players already drawn into a duo can't be removed.</span></div>
+        </form>
+        <div class="form-actions" style="margin-top:14px">
+          <button class="primary" data-act="send-duos" ${complete < 2 || (S.bracket?.locked && !S.bracket?.example) ? "disabled" : ""}>Send ${complete} duos to bracket</button>
+          <button class="danger" data-act="reset-draw" ${D.duos.length ? "" : "disabled"}>Restart draw</button>
+        </div>
+        <p class="hint" style="margin-top:8px">${S.bracket?.locked && !S.bracket?.example ? "Unlock the bracket in Admin first. " : ""}Sending replaces the bracket's duos and clears its results. Duos are seeded in draw order; use Random draw in Admin to reshuffle seeds.</p>
+      </div>` : "";
+    return `<section class="draw">
+      <div class="panel wheel-panel">
+        <div class="panel-head" style="width:100%;margin:0"><h2>Duo draw</h2><span class="mono muted">${remainingShown} left on the wheel</span></div>
+        <div class="wheel-stage"><div class="pointer" aria-hidden="true"></div><div id="wheel-host" role="img" aria-label="Spin wheel of players not yet drawn"></div></div>
+        ${reveal}${admin}
+      </div>
+      <div class="stack">
+        <div class="panel"><div class="panel-head"><h3>Drawn duos</h3><span class="mono muted">${complete}</span></div><div class="duo-list">${duoCards}</div></div>
+        <div class="panel"><div class="panel-head"><h3>Players</h3><span class="mono muted">${D.pool.length}</span></div>${poolChips}</div>
+        ${adminSide}
+      </div>
+    </section>`;
+  }
+
+  // ---------- wheel ----------
+  const wheel = { canvas: null, items: [], rot: 0, hi: null, anim: 0, holdUntil: 0 };
+  const reduceMotion = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
+  function wheelCanvas() {
+    if (!wheel.canvas) {
+      wheel.canvas = document.createElement("canvas");
+      if (window.ResizeObserver) new ResizeObserver(() => drawWheel()).observe(wheel.canvas);
+    }
+    return wheel.canvas;
+  }
+  function mountWheel() {
+    const host = $("#wheel-host"); if (!host) return;
+    host.appendChild(wheelCanvas());
+    if (!wheel.anim && Date.now() > wheel.holdUntil) { wheel.items = drawState().remaining.map((p) => ({ id: p.id, name: p.name })); wheel.rot = 0; wheel.hi = null; }
+    drawWheel();
+  }
+  function drawWheel() {
+    const c = wheel.canvas; if (!c || !c.isConnected) return;
+    const size = c.clientWidth; if (!size) return;
+    const dpr = window.devicePixelRatio || 1;
+    if (c.width !== Math.round(size * dpr)) { c.width = c.height = Math.round(size * dpr); }
+    const g = c.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, size, size);
+    const cs = getComputedStyle(document.documentElement);
+    const tok = (n) => cs.getPropertyValue(n).trim();
+    const fills = [tok("--wheel-1"), tok("--wheel-2"), tok("--wheel-3"), tok("--wheel-4")];
+    const cx = size / 2, r = size / 2 - 6, items = wheel.items, n = items.length;
+    g.lineWidth = 2; g.strokeStyle = tok("--line");
+    if (!n) {
+      g.beginPath(); g.arc(cx, cx, r, 0, Math.PI * 2); g.fillStyle = tok("--panel-2"); g.fill(); g.stroke();
+      g.fillStyle = tok("--muted"); g.font = `600 ${Math.max(14, size / 22)}px ${tok("--font-display")}`; g.textAlign = "center"; g.textBaseline = "middle";
+      g.fillText(drawState().pool.length ? "ALL PLAYERS DRAWN" : "NO PLAYERS YET", cx, cx); return;
+    }
+    const slice = (Math.PI * 2) / n;
+    const fs = Math.max(9, Math.min(size / 20, (r * slice) * 0.55, 26));
+    for (let i = 0; i < n; i++) {
+      const a0 = -Math.PI / 2 + i * slice + wheel.rot;
+      g.beginPath(); g.moveTo(cx, cx); g.arc(cx, cx, r, a0, a0 + slice); g.closePath();
+      const hi = wheel.hi && items[i].id === wheel.hi;
+      g.fillStyle = hi ? tok("--amber") : fills[(n % 4 === 1 && i === n - 1 && n > 1) ? 1 : i % 4]; g.fill();
+      if (n > 1) g.stroke();
+      g.save(); g.translate(cx, cx); g.rotate(a0 + slice / 2);
+      g.fillStyle = hi ? tok("--amber-ink") : tok("--fg"); g.font = `600 ${fs}px ${tok("--font-display")}`; g.textAlign = "right"; g.textBaseline = "middle";
+      let label = items[i].name.toUpperCase(); const maxW = r * 0.72;
+      while (label.length > 3 && g.measureText(label).width > maxW) label = label.slice(0, -2) + "…";
+      g.fillText(label, r - 14, 0); g.restore();
+    }
+    g.beginPath(); g.arc(cx, cx, r, 0, Math.PI * 2); g.lineWidth = 4; g.strokeStyle = tok("--line"); g.stroke();
+    g.beginPath(); g.arc(cx, cx, r * 0.13, 0, Math.PI * 2); g.fillStyle = tok("--panel"); g.fill(); g.lineWidth = 3; g.strokeStyle = tok("--amber"); g.stroke();
+  }
+  function hash01(str) { let h = 2166136261; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0) / 4294967296; }
+  function onDrawSnapshot() {
+    const spin = S.drawDoc && S.drawDoc.spin;
+    const firstLoad = S.lastSpinSeen === undefined;
+    const sid = spin ? spin.id : null;
+    if (sid === S.lastSpinSeen) return;
+    S.lastSpinSeen = sid;
+    if (!spin) { cancelAnimationFrame(wheel.anim); wheel.anim = 0; S.animating = null; wheel.holdUntil = 0; return; }
+    const age = Date.now() - (validDate(spin.at) || 0);
+    if (view !== "draw" || (firstLoad && age > 15000) || !Array.isArray(spin.wheel)) { S.animating = null; wheel.holdUntil = 0; return; }
+    animateSpin(spin);
+  }
+  function animateSpin(spin) {
+    cancelAnimationFrame(wheel.anim);
+    const items = spin.wheel, n = items.length, idx = Math.max(0, items.findIndex((x) => x.id === spin.pick));
+    const slice = (Math.PI * 2) / n;
+    const jitter = (hash01(spin.id) - 0.5) * slice * 0.7;
+    const target = (spin.turns || 6) * Math.PI * 2 - (idx + 0.5) * slice + jitter;
+    const dur = reduceMotion ? 1200 : 7000;
+    wheel.items = items; wheel.hi = null; wheel.rot = 0; S.animating = spin.id;
+    const t0 = performance.now(); let lastSeg = 0;
+    const ease = (t) => 1 - Math.pow(1 - t, 4);
+    const step = (now) => {
+      const t = Math.min(1, (now - t0) / dur);
+      wheel.rot = target * ease(t);
+      const seg = Math.floor((wheel.rot + slice / 2) / slice); if (seg !== lastSeg) { lastSeg = seg; sfx("tick"); }
+      drawWheel();
+      if (t < 1) { wheel.anim = requestAnimationFrame(step); return; }
+      wheel.anim = 0; wheel.hi = spin.pick; S.animating = null; wheel.holdUntil = Date.now() + 4000;
+      drawWheel(); sfx("win"); render();
+      setTimeout(() => { if (!wheel.anim && view === "draw") mountWheel(); }, 4100);
+    };
+    wheel.anim = requestAnimationFrame(step);
+  }
+  let actx = null;
+  function sfx(kind) {
+    if (!S.sound || !actx) return;
+    const now = actx.currentTime;
+    const blip = (f, start, len, vol, type) => { const o = actx.createOscillator(), gn = actx.createGain(); o.type = type; o.frequency.value = f; gn.gain.setValueAtTime(vol, now + start); gn.gain.exponentialRampToValueAtTime(0.0001, now + start + len); o.connect(gn).connect(actx.destination); o.start(now + start); o.stop(now + start + len + 0.02); };
+    if (kind === "tick") blip(1500, 0, 0.03, 0.04, "square");
+    else { blip(660, 0, 0.25, 0.12, "triangle"); blip(990, 0.12, 0.45, 0.12, "triangle"); }
+  }
+  function randInt(n) { const a = new Uint32Array(1); crypto.getRandomValues(a); return a[0] % n; }
 
   // ----- rules -----
   function vRules() {
@@ -671,15 +830,13 @@ ol.rules li::marker { font-family: var(--font-mono); color: var(--amber); }
     const d = (id, v) => esc(draft(id, v ?? ""));
     const prizesTxt = (C.prizes || []).map((p) => `${p.place} | ${p.reward}`).join("\n");
     const hofTxt = (C.hallOfFame || []).map((h) => [h.season, h.team, h.players, h.note].map((x) => x || "").join(" | ")).join("\n");
-    const pending = S.regs.filter((r) => !teams.some((t) => t.regUid === r.id));
     const hasResults = Object.keys(br.matches || {}).length > 0;
     return `
     <section class="panel"><div class="panel-head"><h2>Teams & bracket</h2><span class="chip ${locked ? "kia" : "done"}">${locked ? "Bracket locked" : "Bracket open for changes"}</span></div>
       <div class="grid-2">
         <div class="stack">
-          <h3>Registrations waiting · ${pending.length}</h3>
-          ${pending.length ? `<div class="list">${pending.map((r) => `<div class="row"><div class="grow"><b>${esc(r.name)}</b><div class="muted" style="font-size:.85rem">${esc(r.p1)} & ${esc(r.p2)}${r.contact ? " · " + esc(r.contact) : ""}</div>${r.note ? `<div class="hint">${esc(r.note)}</div>` : ""}</div>
-            <div class="form-actions"><button class="small primary" data-act="admit" data-reg="${esc(r.id)}" ${locked ? "disabled" : ""}>Add to bracket</button><button class="small danger" data-act="reject" data-reg="${esc(r.id)}">Delete</button></div></div>`).join("")}</div>` : `<p class="hint">No pending registrations.</p>`}
+          <h3>Duos come from the draw</h3>
+          <p class="hint">Run the live spin on the <a href="#draw">Duo draw</a> tab, then send the duos here. Use the form below only for a late fix.</p>
           <h3 style="margin-top:8px">Add a duo by hand</h3>
           <form id="add-team" class="stack">
             <input id="add-name" placeholder="Duo name" maxlength="32" value="${d("add-name")}">
@@ -689,9 +846,9 @@ ol.rules li::marker { font-family: var(--font-mono); color: var(--amber); }
         </div>
         <div class="stack">
           <h3>Bracket seeds · ${teams.length}</h3>
-          ${teams.length ? `<div class="list">${teams.map((t, i) => `<div class="row"><span class="mono muted">${i + 1}</span><div class="grow"><b>${esc(t.name)}</b><div class="muted" style="font-size:.85rem">${players(t)}</div></div>
+          ${teams.length ? `<div class="list">${teams.map((t, i) => `<div class="row"><span class="mono muted">${i + 1}</span><div class="grow"><input id="sn-${esc(t.id)}" data-team="${esc(t.id)}" maxlength="32" value="${d("sn-" + t.id, t.name)}" aria-label="Duo name" style="padding:4px 8px"><div class="muted" style="font-size:.85rem;margin-top:3px">${players(t)}</div></div>
             <div class="form-actions"><button class="small" data-act="seed-up" data-i="${i}" ${locked || i === 0 ? "disabled" : ""} aria-label="Move up">▲</button><button class="small" data-act="seed-down" data-i="${i}" ${locked || i === teams.length - 1 ? "disabled" : ""} aria-label="Move down">▼</button><button class="small danger" data-act="seed-remove" data-i="${i}" ${locked ? "disabled" : ""}>Remove</button></div></div>`).join("")}</div>` : `<p class="hint">No duos in the bracket yet. Add registrations from the left.</p>`}
-          <p class="hint">Seed 1 meets the lowest seed. Empty slots become byes for the top seeds. ${teams.length >= 2 ? `Current size: ${2 ** Math.ceil(Math.log2(teams.length))} slots, ${2 ** Math.ceil(Math.log2(teams.length)) - teams.length} bye(s).` : ""}</p>
+          <p class="hint">Edit a duo's name and click away to save it. Seed 1 meets the lowest seed. Empty slots become byes for the top seeds. ${teams.length >= 2 ? `Current size: ${2 ** Math.ceil(Math.log2(teams.length))} slots, ${2 ** Math.ceil(Math.log2(teams.length)) - teams.length} bye(s).` : ""}</p>
           <div class="form-actions">
             <button data-act="shuffle" ${locked || teams.length < 2 ? "disabled" : ""}>Random draw</button>
             ${locked ? `<button data-act="unlock">Unlock bracket</button>` : `<button class="primary" data-act="lock" ${teams.length < 2 ? "disabled" : ""}>Lock bracket</button>`}
@@ -712,10 +869,9 @@ ol.rules li::marker { font-family: var(--font-mono); color: var(--amber); }
         <label class="field"><span>Tagline</span><input id="cfg-tagline" value="${d("cfg-tagline", C.tagline)}"></label>
         <div class="form-grid">
           <label class="field"><span>Tournament starts</span><input id="cfg-starts" type="datetime-local" value="${d("cfg-starts", toLocalInput(C.startsAt))}"></label>
-          <label class="field"><span>Registration closes</span><input id="cfg-closes" type="datetime-local" value="${d("cfg-closes", toLocalInput(C.registrationClosesAt))}"></label>
+          <label class="field"><span>Live duo draw</span><input id="cfg-drawat" type="datetime-local" value="${d("cfg-drawat", toLocalInput(C.drawAt))}"></label>
           <label class="field"><span>Contact line</span><input id="cfg-contact" value="${d("cfg-contact", C.contact)}"></label>
         </div>
-        <label class="check"><input type="checkbox" id="cfg-open" ${draft("cfg-open", C.registrationOpen !== false) ? "checked" : ""}> Registration open</label>
         <label class="field"><span>Prizes · one per line: Place | Reward</span><textarea id="cfg-prizes">${d("cfg-prizes", prizesTxt)}</textarea></label>
         <label class="field"><span>Rules · one per line</span><textarea id="cfg-rules" style="min-height:200px">${d("cfg-rules", (C.rules || []).join("\n"))}</textarea></label>
         <label class="field"><span>Past champions · one per line: Season | Duo | Players | Note</span><textarea id="cfg-hof">${d("cfg-hof", hofTxt)}</textarea></label>
@@ -765,8 +921,15 @@ ol.rules li::marker { font-family: var(--font-mono); color: var(--amber); }
   function toast(msg, err) { const r = $("#toast-root"); r.innerHTML = `<div class="toast ${err ? "err" : ""}">${esc(msg)}</div>`; clearTimeout(toastT); toastT = setTimeout(() => { r.innerHTML = ""; }, 2600); }
 
   // ---------- events ----------
-  document.addEventListener("input", (e) => { const el = e.target; if (el.id && /^(reg-|cfg-|add-|m-)/.test(el.id)) S.draft[el.id] = el.type === "checkbox" ? el.checked : el.value; });
-  document.addEventListener("change", (e) => { const el = e.target; if (el.id && /^(reg-|cfg-|add-|m-)/.test(el.id)) S.draft[el.id] = el.type === "checkbox" ? el.checked : el.value; });
+  document.addEventListener("input", (e) => { const el = e.target; if (el.id && /^(pool-|cfg-|add-|m-|sn-)/.test(el.id)) S.draft[el.id] = el.type === "checkbox" ? el.checked : el.value; });
+  document.addEventListener("change", (e) => {
+    const el = e.target; if (el.id && /^(pool-|cfg-|add-|m-|sn-)/.test(el.id)) S.draft[el.id] = el.type === "checkbox" ? el.checked : el.value;
+    if (el.dataset && el.dataset.team && el.id.startsWith("sn-") && S.isAdmin && S.db) {
+      const name = el.value.trim(); delete S.draft[el.id];
+      const teams = teamsCopy(); const t = teams.find((x) => x.id === el.dataset.team);
+      if (t && name && name !== t.name) { t.name = name; saveBracket({ teams }, "Duo renamed"); }
+    }
+  });
   document.addEventListener("focusout", () => { setTimeout(() => { if (pendingRender) render(); }, 0); });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && S.modalKey) closeModal(); });
 
@@ -784,6 +947,13 @@ ol.rules li::marker { font-family: var(--font-mono); color: var(--amber); }
     if (act === "backdrop") { if (e.target === el) closeModal(); return; }
     if (act === "close") { closeModal(); return; }
     if (act === "match") { openMatch(el.dataset.key); return; }
+    if (act === "sound") {
+      S.sound = !S.sound;
+      if (S.sound && !actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch { actx = null; } }
+      if (actx && actx.state === "suspended") actx.resume();
+      render(); return;
+    }
+    if (act === "focus") { document.body.classList.toggle("focus"); setTimeout(drawWheel, 50); return; }
     if (!S.db) return;
     if (act === "vote") {
       const id = el.dataset.team; const mine = (S.votes.find((v) => v.id === S.uid) || {}).teamId;
@@ -791,15 +961,28 @@ ol.rules li::marker { font-family: var(--font-mono); color: var(--amber); }
       queueWrite(() => (mine === id ? ref.delete() : ref.set({ teamId: id, at: new Date().toISOString() })), mine === id ? "Pick removed" : "Pick saved");
       return;
     }
-    if (act === "withdraw") { if (!arm(el)) return; clearDraft("reg-"); queueWrite(() => S.db.doc("registrations/" + S.uid).delete(), "Registration withdrawn"); return; }
     if (!S.isAdmin) return;
     const teams = teamsCopy();
-    if (act === "admit") {
-      const r = S.regs.find((x) => x.id === el.dataset.reg); if (!r) return;
-      teams.push({ id: "t" + rid(), name: r.name, p1: r.p1, p2: r.p2, regUid: r.id });
-      saveBracket({ teams }, `${r.name} added to the bracket`);
-    } else if (act === "reject") {
-      if (!arm(el)) return; queueWrite(() => S.db.doc("registrations/" + el.dataset.reg).delete(), "Registration deleted");
+    if (act === "spin") {
+      const D = drawState(); if (!D.remaining.length || S.animating) return;
+      const pick = D.remaining[randInt(D.remaining.length)];
+      const duos = D.duos.map((x) => ({ ...x }));
+      if (D.open) duos[duos.length - 1].p2 = pick.id; else duos.push({ id: "d" + rid(), name: `Duo ${duos.length + 1}`, p1: pick.id, p2: null });
+      const spin = { id: "s" + rid() + Date.now().toString(36), at: new Date().toISOString(), wheel: D.remaining.map((p) => ({ id: p.id, name: p.name })), pick: pick.id, turns: 5 + randInt(3) };
+      queueWrite(() => S.db.doc("draw/main").set({ ...D.d, pool: D.pool, duos, spin, updatedAt: spin.at }));
+    } else if (act === "undo-spin") {
+      const D = drawState(); const duos = D.duos.map((x) => ({ ...x })); const last = duos[duos.length - 1]; if (!last) return;
+      if (last.p2) last.p2 = null; else duos.pop();
+      queueWrite(() => S.db.doc("draw/main").set({ ...D.d, duos, spin: null, updatedAt: new Date().toISOString() }), "Last pick undone");
+    } else if (act === "reset-draw") {
+      if (!arm(el)) return; const D = drawState();
+      queueWrite(() => S.db.doc("draw/main").set({ pool: D.pool, duos: [], spin: null, updatedAt: new Date().toISOString() }), "Draw restarted");
+    } else if (act === "send-duos") {
+      const D = drawState(); const done = D.duos.filter((x) => x.p2);
+      if (done.length < 2 || (S.bracket?.locked && !S.bracket?.example)) return;
+      if ((S.bracket?.teams || []).length && !arm(el)) return;
+      const nt = done.map((x) => ({ id: x.id, name: x.name, p1: pname(D, x.p1), p2: pname(D, x.p2) }));
+      saveBracket({ teams: nt, matches: {}, locked: false, example: false }, `${nt.length} duos sent to the bracket`);
     } else if (act === "seed-up" || act === "seed-down") {
       const i = +el.dataset.i, j = act === "seed-up" ? i - 1 : i + 1; [teams[i], teams[j]] = [teams[j], teams[i]]; saveBracket({ teams });
     } else if (act === "seed-remove") {
@@ -820,14 +1003,19 @@ ol.rules li::marker { font-family: var(--font-mono); color: var(--amber); }
   document.addEventListener("submit", (e) => {
     const f = e.target; e.preventDefault();
     if (!S.db) return;
-    if (f.id === "reg-form") {
-      const g = (id) => $("#" + id).value.trim();
-      const data = { name: g("reg-name"), p1: g("reg-p1"), p2: g("reg-p2"), contact: g("reg-contact"), note: g("reg-note") };
-      const err = $("#reg-err");
-      if (!data.name || !data.p1 || !data.p2) { err.hidden = false; err.textContent = "Add a duo name and both players' in-game names."; return; }
-      const mine = S.regs.find((r) => r.id === S.uid);
-      queueWrite(() => S.db.doc("registrations/" + S.uid).set({ ...data, createdAt: (mine && mine.createdAt) || new Date().toISOString(), updatedAt: new Date().toISOString() }), mine ? "Registration updated" : "Duo registered").then(() => { clearDraft("reg-"); });
-      document.activeElement && document.activeElement.blur();
+    if (f.id === "pool-form" && S.isAdmin) {
+      const D = drawState();
+      const names = $("#pool-text").value.split("\n").map((x) => x.trim()).filter(Boolean);
+      const left = D.pool.slice(); const pool = [];
+      for (const nm of names) {
+        const i = left.findIndex((p) => p.name === nm);
+        if (i >= 0) pool.push(left.splice(i, 1)[0]); else pool.push({ id: "p" + rid(), name: nm });
+      }
+      const used = new Set(D.duos.flatMap((x) => [x.p1, x.p2]).filter(Boolean));
+      const lost = left.filter((p) => used.has(p.id));
+      if (lost.length) { toast(`${lost.map((p) => p.name).join(", ")} is already in a duo. Undo or restart the draw first.`, true); return; }
+      clearDraft("pool-"); document.activeElement && document.activeElement.blur();
+      queueWrite(() => S.db.doc("draw/main").set({ ...D.d, pool, duos: D.duos, spin: D.spin, updatedAt: new Date().toISOString() }), `Pool saved · ${pool.length} players`);
     } else if (f.id === "add-team" && S.isAdmin) {
       const g = (id) => $("#" + id).value.trim();
       if (!g("add-name") || !g("add-p1") || !g("add-p2")) { toast("Add a duo name and both players.", true); return; }
@@ -839,8 +1027,7 @@ ol.rules li::marker { font-family: var(--font-mono); color: var(--amber); }
       const lines = (id) => $("#" + id).value.split("\n").map((s) => s.trim()).filter(Boolean);
       const patch = {
         title: g("cfg-title") || "Haji Duo Tournament", season: parseInt(g("cfg-season"), 10) || 2, game: g("cfg-game"), tagline: g("cfg-tagline"),
-        startsAt: fromLocalInput(g("cfg-starts")), registrationClosesAt: fromLocalInput(g("cfg-closes")), contact: g("cfg-contact"),
-        registrationOpen: $("#cfg-open").checked,
+        startsAt: fromLocalInput(g("cfg-starts")), drawAt: fromLocalInput(g("cfg-drawat")), contact: g("cfg-contact"),
         prizes: lines("cfg-prizes").map((l) => { const [place, ...rest] = l.split("|"); return { place: place.trim(), reward: rest.join("|").trim() }; }),
         rules: lines("cfg-rules"),
         hallOfFame: lines("cfg-hof").map((l) => { const [season, team, pl, note] = l.split("|").map((s) => (s || "").trim()); return { season, team, players: pl, note }; }),
@@ -865,6 +1052,7 @@ ol.rules li::marker { font-family: var(--font-mono); color: var(--amber); }
     const h = location.hash.replace("#", "");
     view = VIEWS.some(([id]) => id === h) ? h : "overview";
     S.draft = Object.fromEntries(Object.entries(S.draft).filter(([k]) => k.startsWith("m-")));
+    if (view !== "draw") document.body.classList.remove("focus");
     pendingRender = false; render();
     window.scrollTo({ top: 0 });
   }

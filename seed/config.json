@@ -2,19 +2,29 @@
   "title": "Haji Duo Tournament",
   "season": 2,
   "game": "Arena Breakout: Infinite · PC",
-  "tagline": "Two operators. One raid. The duo that extracts the most loot moves on.",
+  "tagline": "Random duos, spun live. One raid per round. The duo that extracts the most loot moves on.",
   "startsAt": "2026-12-05T12:00:00.000Z",
-  "registrationClosesAt": "2026-11-30T15:59:00.000Z",
-  "registrationOpen": true,
   "contact": "Discord: #haji-duo-s2 (placeholder, edit in Admin)",
   "prizes": [
-    {"place": "Champions", "reward": "RM 300 + Champion role"},
-    {"place": "Runner-up", "reward": "RM 150"},
-    {"place": "Semifinalists", "reward": "RM 50 each"},
-    {"place": "Biggest single haul", "reward": "RM 50 bonus"}
+    {
+      "place": "Champions",
+      "reward": "RM 300 + Champion role"
+    },
+    {
+      "place": "Runner-up",
+      "reward": "RM 150"
+    },
+    {
+      "place": "Semifinalists",
+      "reward": "RM 50 each"
+    },
+    {
+      "place": "Biggest single haul",
+      "reward": "RM 50 bonus"
+    }
   ],
   "rules": [
-    "Duos only: two registered players per team. No substitutes after the bracket is locked.",
+    "Duos are random: every player goes into the pool and partners are drawn live on the spin wheel. No swapping partners after the draw.",
     "Every round is head-to-head. Both duos run one raid on the map the organizer sets, in the same time window.",
     "Score is the total value of loot both players extract, read from the end-of-raid summary, in Koen.",
     "A player who dies or fails to extract scores 0. If both die, the duo is wiped and scores 0.",
@@ -25,8 +35,14 @@
     "Starting loadout value is capped at 300,000 Koen per player (placeholder; organizer confirms)."
   ],
   "hallOfFame": [
-    {"season": "Season 1", "team": "Season 1 Champions", "players": "Player A & Player B", "note": "Placeholder: edit in Admin → Event info"}
+    {
+      "season": "Season 1",
+      "team": "Season 1 Champions",
+      "players": "Player A & Player B",
+      "note": "Placeholder: edit in Admin → Event info"
+    }
   ],
   "placeholder": true,
-  "updatedAt": "2026-11-10T00:00:00.000Z"
+  "updatedAt": "2026-11-10T00:00:00.000Z",
+  "drawAt": "2026-12-04T12:00:00.000Z"
 }
