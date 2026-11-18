@@ -413,7 +413,7 @@ body.focus .focus-exit { display: inline-flex; }
     const [db, user] = use ? await Promise.all([use("db").catch(() => null), use("user").catch(() => null)]) : [null, null];
     S.user = user;
     if (user) {
-      const [id, admin, cw] = await Promise.all([user.id(), user.canEdit(), user.can("data.write")]);
+      const [id, admin, cw] = await Promise.all([user.id(), user.isOwner(), user.can("data.write")]);
       S.uid = id; S.isAdmin = !!admin; S.canWrite = cw;
     }
     if (!db) { S.loading = false; S.dbOk = false; render(); return; }
@@ -589,7 +589,7 @@ body.focus .focus-exit { display: inline-flex; }
       ${c.champion ? `<div class="champ-card"><span class="label">Winners</span><b>${teamLabel(c.champion)}</b><span class="muted">${players(c.champion)}</span></div>` : `<div class="empty" style="width:100%"><b>TBD</b><span>Highest loot in the final takes it.</span></div>`}
     </div></div></div></div>`;
     return `<section class="panel">
-      <div class="panel-head"><h2>Bracket</h2><span class="hint">Head-to-head · higher extracted loot advances · ${S.isAdmin ? "click a raid to enter results" : "click a raid for details"}</span></div>
+      <div class="panel-head"><h2>Bracket</h2><span class="hint">Head-to-head · higher extracted loot advances · click a raid for details${S.isAdmin ? " · enter results in Admin" : ""}</span></div>
       <div class="bracket-frame"><div class="bracket">${cols}${champCol}</div></div>
     </section>`;
   }
@@ -676,18 +676,6 @@ body.focus .focus-exit { display: inline-flex; }
       : `<div class="empty"><b>No duos yet</b><span>Each spin pulls one player off the wheel. Two picks make a duo.</span></div>`;
     const poolChips = D.pool.length ? `<div class="pool">${D.pool.map((p) => `<span class="${D.remaining.includes(p) || p.id === hidden ? "" : "gone"}">${esc(p.name)}</span>`).join("")}</div>` : `<p class="hint">No players in the pool yet.</p>`;
     const poolText = D.pool.map((p) => p.name).join("\n");
-    const adminSide = S.isAdmin ? `
-      <div class="panel draw-side-admin"><div class="panel-head"><h3>Player pool</h3><span class="hint">One in-game name per line</span></div>
-        <form id="pool-form" class="stack">
-          <textarea id="pool-text" style="min-height:160px" placeholder="Player names, one per line">${esc(draft("pool-text", poolText))}</textarea>
-          <div class="form-actions"><button class="primary" type="submit">Save pool</button><span class="hint">Players already drawn into a duo can't be removed.</span></div>
-        </form>
-        <div class="form-actions" style="margin-top:14px">
-          <button class="primary" data-act="send-duos" ${complete < 2 || (S.bracket?.locked && !S.bracket?.example) ? "disabled" : ""}>Send ${complete} duos to bracket</button>
-          <button class="danger" data-act="reset-draw" ${D.duos.length ? "" : "disabled"}>Restart draw</button>
-        </div>
-        <p class="hint" style="margin-top:8px">${S.bracket?.locked && !S.bracket?.example ? "Unlock the bracket in Admin first. " : ""}Sending replaces the bracket's duos and clears its results. Duos are seeded in draw order; use Random draw in Admin to reshuffle seeds.</p>
-      </div>` : "";
     return `<section class="draw">
       <div class="panel wheel-panel">
         <div class="panel-head" style="width:100%;margin:0"><h2>Duo draw</h2><span class="mono muted">${remainingShown} left on the wheel</span></div>
@@ -697,7 +685,6 @@ body.focus .focus-exit { display: inline-flex; }
       <div class="stack">
         <div class="panel"><div class="panel-head"><h3>Drawn duos</h3><span class="mono muted">${complete}</span></div><div class="duo-list">${duoCards}</div></div>
         <div class="panel"><div class="panel-head"><h3>Players</h3><span class="mono muted">${D.pool.length}</span></div>${poolChips}</div>
-        ${adminSide}
       </div>
     </section>`;
   }
@@ -831,12 +818,12 @@ body.focus .focus-exit { display: inline-flex; }
 
   // ----- admin -----
   function vAdmin() {
-    if (!S.isAdmin) return `<section class="panel"><div class="empty"><b>Organizers only</b><span>Only the page owner and editors can manage the tournament.</span></div></section>`;
+    if (!S.isAdmin) return `<section class="panel"><div class="empty"><b>Organizers only</b><span>Only the tournament organizer can manage the tournament.</span></div></section>`;
     const C = cfg(); const br = S.bracket || { teams: [], matches: {} }; const teams = br.teams || []; const locked = !!br.locked;
     const d = (id, v) => esc(draft(id, v ?? ""));
     const prizesTxt = (C.prizes || []).map((p) => `${p.place} | ${p.reward}`).join("\n");
     const hasResults = Object.keys(br.matches || {}).length > 0;
-    return `
+    return `${adminResults()}${adminDraw()}
     <section class="panel"><div class="panel-head"><h2>Teams & bracket</h2><span class="chip ${locked ? "kia" : "done"}">${locked ? "Bracket locked" : "Bracket open for changes"}</span></div>
       <div class="grid-2">
         <div class="stack">
@@ -860,7 +847,7 @@ body.focus .focus-exit { display: inline-flex; }
             <button class="danger" data-act="reset-results" ${hasResults ? "" : "disabled"}>Clear all results</button>
             ${br.example ? `<button class="danger" data-act="clear-example">Clear example bracket</button>` : ""}
           </div>
-          <p class="hint">Lock the bracket before entering results so seeds can't shift. Enter loot by clicking any raid on the Bracket tab.</p>
+          <p class="hint">Lock the bracket before entering results so seeds can't shift. Enter loot in the Results section at the top of this tab.</p>
         </div>
       </div>
     </section>
@@ -906,8 +893,39 @@ body.focus .focus-exit { display: inline-flex; }
   }
   function hofRowsFrom(C) { return (Array.isArray(C.hallOfFame) ? C.hallOfFame : []).map((h) => ({ season: h.season || "", title: h.title || "Champions", team: h.team || "", players: h.players || "", note: h.note || "" })); }
 
+  function adminDraw() {
+    const D = drawState(); const complete = D.duos.filter((x) => x.p2).length;
+    const poolText = D.pool.map((p) => p.name).join("\n");
+    return `
+      <section class="panel"><div class="panel-head"><h2>Duo draw · player pool</h2><span class="hint">One in-game name per line. Spin from the <a href="#draw">Duo draw</a> tab.</span></div>
+        <form id="pool-form" class="stack">
+          <textarea id="pool-text" style="min-height:160px" placeholder="Player names, one per line">${esc(draft("pool-text", poolText))}</textarea>
+          <div class="form-actions"><button class="primary" type="submit">Save pool</button><span class="hint">Players already drawn into a duo can't be removed.</span></div>
+        </form>
+        <div class="form-actions" style="margin-top:14px">
+          <button class="primary" data-act="send-duos" ${complete < 2 || (S.bracket?.locked && !S.bracket?.example) ? "disabled" : ""}>Send ${complete} duos to bracket</button>
+          <button class="danger" data-act="reset-draw" ${D.duos.length ? "" : "disabled"}>Restart draw</button>
+        </div>
+        <p class="hint" style="margin-top:8px">${S.bracket?.locked && !S.bracket?.example ? "Unlock the bracket in Admin first. " : ""}Sending replaces the bracket's duos and clears its results. Duos are seeded in draw order; use Random draw in Admin to reshuffle seeds.</p>
+      </section>`;
+  }
+
+  function adminResults() {
+    const c = compute();
+    if (!c) return `<section class="panel"><div class="panel-head"><h2>Results</h2></div><p class="hint">Results open once the bracket has at least two duos.</p></section>`;
+    const rows = c.rounds.map((rd) => {
+      const items = rd.filter((m) => m.status !== "bye").map((m) => {
+        const chip = m.status === "live" ? `<span class="chip live">Live</span>` : m.status === "done" ? `<span class="chip done">Settled</span>` : m.status === "tie" ? `<span class="chip amber">Tie</span>` : `<span class="chip">${validDate(m.res.time) ? esc(shortFmt.format(validDate(m.res.time))) : "Time TBA"}</span>`;
+        const score = m.la != null || m.lb != null ? ` <span class="mono muted">${m.la == null ? "—" : compact(m.la)} – ${m.lb == null ? "—" : compact(m.lb)}</span>` : "";
+        return `<div class="row"><span class="mono muted">M${m.r + 1}.${m.m + 1}</span><div class="grow">${m.A.team ? teamLabel(m.A.team) : "TBD"} <span class="muted">vs</span> ${m.B.team ? teamLabel(m.B.team) : "TBD"}${score}</div>${chip}<button class="small ${m.status === "live" ? "primary" : ""}" data-act="match" data-key="${m.key}" data-edit="1">${m.A.team && m.B.team ? "Enter result" : "Set time & map"}</button></div>`;
+      }).join("");
+      return items ? `<div class="stack" style="gap:0"><div class="label" style="margin-top:10px">${esc(rd[0].name)}</div>${items}</div>` : "";
+    }).join("");
+    return `<section class="panel"><div class="panel-head"><h2>Results</h2><span class="hint">Enter loot, map, time and live status. Everyone sees changes instantly.</span></div>${rows}</section>`;
+  }
+
   // ---------- modal ----------
-  function openMatch(key) { S.modalKey = key; renderModal(); }
+  function openMatch(key, edit) { S.modalKey = key; S.modalEdit = !!edit && S.isAdmin; renderModal(); }
   function closeModal() { S.modalKey = null; $("#modal-root").innerHTML = ""; clearDraft("m-"); }
   function renderModal() {
     const root = $("#modal-root");
@@ -915,14 +933,14 @@ body.focus .focus-exit { display: inline-flex; }
     if (root.contains(document.activeElement) && /^(INPUT|SELECT)$/.test(document.activeElement.tagName)) return;
     const c = compute(); const mt = allMatches(c).find((m) => m.key === S.modalKey);
     if (!mt) { closeModal(); return; }
-    const res = mt.res; const editable = S.isAdmin && mt.A.team && mt.B.team;
+    const res = mt.res; const editable = S.isAdmin && S.modalEdit; const hasTeams = mt.A.team && mt.B.team;
     const side = (slot, l, sideKey) => `<div class="side ${mt.winner && mt.winner === slot.team && mt.status !== "bye" ? "win" : ""}"><span class="label">${slot.bye ? "Bye" : slot.seed ? "Seed " + slot.seed : "Waiting"}</span><b>${slot.team ? teamLabel(slot.team) : slot.bye ? "—" : "TBD"}</b><span class="muted" style="font-size:.85rem">${players(slot.team)}</span><span class="mono">${l == null ? "" : res["kia" + sideKey] ? "WIPED · 0" : koen(l)}</span></div>`;
     const v = (id, val) => esc(draft(id, val ?? ""));
     const form = editable ? `<form id="match-form" class="stack" data-key="${mt.key}">
-        <div class="form-grid">
+        ${hasTeams ? `<div class="form-grid">
           <label class="field"><span>${teamLabel(mt.A.team)} · loot (Koen)</span><input id="m-a" inputmode="numeric" placeholder="e.g. 1250000" value="${v("m-a", res.a)}"><label class="check"><input type="checkbox" id="m-kiaA" ${draft("m-kiaA", !!res.kiaA) ? "checked" : ""}> Wiped (scores 0)</label></label>
           <label class="field"><span>${teamLabel(mt.B.team)} · loot (Koen)</span><input id="m-b" inputmode="numeric" placeholder="e.g. 980000" value="${v("m-b", res.b)}"><label class="check"><input type="checkbox" id="m-kiaB" ${draft("m-kiaB", !!res.kiaB) ? "checked" : ""}> Wiped (scores 0)</label></label>
-        </div>
+        </div>` : `<p class="hint">Loot entry opens once both duos for this raid are known. You can set the time and map now.</p>`}
         <div class="form-grid">
           <label class="field"><span>Map</span><select id="m-map"><option value="">Not set</option>${MAPS.map((m) => `<option ${draft("m-map", res.map) === m ? "selected" : ""}>${m}</option>`).join("")}</select></label>
           <label class="field"><span>Raid time</span><input id="m-time" type="datetime-local" value="${v("m-time", toLocalInput(res.time))}"></label>
@@ -975,7 +993,7 @@ body.focus .focus-exit { display: inline-flex; }
     const act = el.dataset.act;
     if (act === "backdrop") { if (e.target === el) closeModal(); return; }
     if (act === "close") { closeModal(); return; }
-    if (act === "match") { openMatch(el.dataset.key); return; }
+    if (act === "match") { openMatch(el.dataset.key, el.dataset.edit === "1"); return; }
     if (act === "sound") {
       S.sound = !S.sound;
       if (S.sound && !actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch { actx = null; } }
@@ -1071,9 +1089,9 @@ body.focus .focus-exit { display: inline-flex; }
       saveConfig(patch, "Event info saved");
     } else if (f.id === "match-form" && S.isAdmin) {
       const key = f.dataset.key;
-      const a = parseLoot($("#m-a").value), b = parseLoot($("#m-b").value);
+      const a = $("#m-a") ? parseLoot($("#m-a").value) : null, b = $("#m-b") ? parseLoot($("#m-b").value) : null;
       if (Number.isNaN(a) || Number.isNaN(b)) { toast("Loot must be a number, like 1250000 or 1.25m.", true); return; }
-      const res = { a, b, kiaA: $("#m-kiaA").checked, kiaB: $("#m-kiaB").checked, map: $("#m-map").value || null, time: fromLocalInput($("#m-time").value), live: $("#m-live").checked };
+      const res = { a, b, kiaA: !!$("#m-kiaA")?.checked, kiaB: !!$("#m-kiaB")?.checked, map: $("#m-map").value || null, time: fromLocalInput($("#m-time").value), live: $("#m-live").checked };
       const tb = $("#m-tb"); res.tb = tb ? (tb.value || null) : null;
       if ((res.a != null || res.kiaA) && (res.b != null || res.kiaB)) res.live = false;
       const matches = { ...(S.bracket?.matches || {}), [key]: res };
