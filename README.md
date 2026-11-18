@@ -8,7 +8,9 @@ Live page: https://claude.ai/artifact/6mYakaFo5UUZdsRMEs6XkX
 Players sign up with just their name at https://ecomforges.com/haji-duo-tournament-s2-register/
 (a public Breakdance form, no login). While the organizer has the tournament page open on
 claude.ai, it reads new form entries through the ecomforges connector every 30 seconds and
-adds them to the Duo draw player pool, skipping duplicate names.
+adds them to the Duo draw player pool, skipping duplicate names. The pool holds 20 players
+(10 duos), first come first served; later sign-ups join a waitlist and move up when a spot opens.
+The cap is editable in Admin → Event info.
 
 ## Duo draw
 Duos are random. The organizer puts every player in the pool and spins the wheel live

@@ -477,7 +477,7 @@ body.focus .focus-exit { display: inline-flex; }
         <h1>${esc(C.title || "Haji Duo Tournament")}<em>Season ${esc(C.season || 2)}</em></h1>
         ${C.tagline ? `<p class="tag">${esc(C.tagline)}</p>` : ""}
         <div class="cta">
-          ${C.registerUrl && !D.duos.length ? `<a class="btn primary" href="${esc(C.registerUrl)}" target="_blank" rel="noopener">Sign up to play</a>` : ""}
+          ${C.registerUrl && !D.duos.length ? `<a class="btn primary" href="${esc(C.registerUrl)}" target="_blank" rel="noopener">${D.pool.length >= maxPlayers() ? "Join the waitlist" : "Sign up to play"}</a>` : ""}
           <a class="btn ${C.registerUrl && !D.duos.length ? "" : "primary"}" href="#draw">${D.duos.length && !D.remaining.length ? "See the drawn duos" : "Watch the duo draw"}</a>
           <a class="btn" href="#bracket">View bracket</a>
           <a class="btn" href="#rules">Rules</a>
@@ -486,7 +486,7 @@ body.focus .focus-exit { display: inline-flex; }
       ${countdownBlock(c)}
     </section>
     <section class="stats">
-      <div class="stat"><div class="label">Players in pool</div><b>${D.pool.length}</b><small>${D.duos.filter((x) => x.p2).length} duos drawn · ${D.remaining.length} left</small></div>
+      <div class="stat"><div class="label">Players in pool</div><b>${D.pool.length}<span class="muted" style="font-size:1rem">/${maxPlayers()}</span></b><small>${D.pool.length >= maxPlayers() ? `Full${D.waitlist.length ? ` · ${D.waitlist.length} on waitlist` : ""}` : `${maxPlayers() - D.pool.length} spots left · first come first served`}</small></div>
       <div class="stat"><div class="label">In the bracket</div><b>${c ? c.teams.length : (S.bracket?.teams?.length || 0)}</b><small>${c ? `${c.size}-slot bracket · ${c.R} rounds` : "Bracket not drawn yet"}</small></div>
       <div class="stat"><div class="label">Raids settled</div><b>${doneCount}</b><small>of ${c ? c.size - 1 - allMatches(c).filter((m) => m.status === "bye").length : 0} head-to-heads</small></div>
       <div class="stat"><div class="label">Loot extracted</div><b>${compact(total)}</b><small>Koen across all raids</small></div>
@@ -618,7 +618,14 @@ body.focus .focus-exit { display: inline-flex; }
     const remaining = pool.filter((p) => !used.has(p.id));
     const last = duos[duos.length - 1];
     const open = last && !last.p2 ? last : null;
-    return { d, pool, duos, byId, remaining, open, spin: d.spin || null };
+    const waitlist = Array.isArray(d.waitlist) ? d.waitlist : [];
+    return { d, pool, duos, byId, remaining, open, waitlist, spin: d.spin || null };
+  }
+  const maxPlayers = () => { const n = parseInt(cfg().maxPlayers, 10); return n > 1 ? n : 20; };
+  function fillFromWaitlist(pool, waitlist) {
+    const max = maxPlayers(); let promoted = 0;
+    while (pool.length < max && waitlist.length) { pool.push(waitlist.shift()); promoted++; }
+    return promoted;
   }
   const pname = (D, id) => (D.byId.get(id) || {}).name || "?";
   function vDraw() {
@@ -659,7 +666,8 @@ body.focus .focus-exit { display: inline-flex; }
       </div>
       <div class="stack">
         <div class="panel"><div class="panel-head"><h3>Drawn duos</h3><span class="mono muted">${complete}</span></div><div class="duo-list">${duoCards}</div></div>
-        <div class="panel"><div class="panel-head"><h3>Players</h3><span class="mono muted">${D.pool.length}</span></div>${poolChips}</div>
+        <div class="panel"><div class="panel-head"><h3>Players</h3><span class="mono muted">${D.pool.length}/${maxPlayers()}${D.pool.length >= maxPlayers() ? " · full" : ""}</span></div>${poolChips}
+          ${D.waitlist.length ? `<div class="label" style="margin-top:14px">Waitlist · first come first served</div><div class="pool" style="margin-top:6px">${D.waitlist.map((w, i) => `<span>${i + 1}. ${esc(w.name)}</span>`).join("")}</div>` : ""}</div>
       </div>
     </section>`;
   }
@@ -855,24 +863,30 @@ body.focus .focus-exit { display: inline-flex; }
   }
   function importSignups(subs) {
     const D0 = drawState(); const seen0 = new Set((Array.isArray(D0.d.signupsSeen) ? D0.d.signupsSeen : []).map(String));
-    if (!subs.some((s) => s && s.id != null && !seen0.has(String(s.id)))) return Promise.resolve("");
+    const roomForWaitlist = D0.waitlist.length && D0.pool.length < maxPlayers();
+    if (!roomForWaitlist && !subs.some((s) => s && s.id != null && !seen0.has(String(s.id)))) return Promise.resolve("");
     let msg = "";
     return queueWrite(() => {
       const D = drawState(); const seen = new Set((Array.isArray(D.d.signupsSeen) ? D.d.signupsSeen : []).map(String));
       const fresh = subs.filter((s) => s && s.id != null && !seen.has(String(s.id))).sort((a, b) => String(a.date).localeCompare(String(b.date)));
-      if (!fresh.length) return Promise.resolve();
-      const pool = D.pool.slice(); const names = new Set(pool.map((p) => p.name.toLowerCase()));
-      let added = 0, dup = 0;
+      const pool = D.pool.slice(); const waitlist = D.waitlist.slice();
+      const promoted = fillFromWaitlist(pool, waitlist);
+      if (!fresh.length && !promoted) return Promise.resolve();
+      const names = new Set([...pool, ...waitlist].map((p) => p.name.toLowerCase()));
+      let added = 0, dup = 0, waited = 0;
       for (const s of fresh) {
         seen.add(String(s.id));
         const nm = String((s.fields && s.fields.name) || "").replace(/\s+/g, " ").trim().slice(0, 32);
         if (!nm) continue;
         if (names.has(nm.toLowerCase())) { dup++; continue; }
-        names.add(nm.toLowerCase()); pool.push({ id: "w" + s.id, name: nm, src: "signup" }); added++;
+        names.add(nm.toLowerCase());
+        const entry = { id: "w" + s.id, name: nm, src: "signup" };
+        if (pool.length < maxPlayers()) { pool.push(entry); added++; } else { waitlist.push(entry); waited++; }
       }
-      msg = `${added} added${dup ? `, ${dup} duplicate name${dup === 1 ? "" : "s"} skipped` : ""} at ${timeFmt.format(new Date())}`;
-      if (added) toast(`${added} new sign-up${added === 1 ? "" : "s"} added to the pool`);
-      return S.db.doc("draw/main").set({ ...D.d, pool, duos: D.duos, spin: D.spin, signupsSeen: [...seen], updatedAt: new Date().toISOString() });
+      added += promoted;
+      msg = [`${added} added`, waited ? `${waited} to waitlist` : "", dup ? `${dup} duplicate${dup === 1 ? "" : "s"} skipped` : ""].filter(Boolean).join(", ") + ` at ${timeFmt.format(new Date())}`;
+      if (added || waited) toast([added ? `${added} added to the pool` : "", waited ? `${waited} on the waitlist (pool full)` : ""].filter(Boolean).join(" · "));
+      return S.db.doc("draw/main").set({ ...D.d, pool, waitlist, duos: D.duos, spin: D.spin, signupsSeen: [...seen], updatedAt: new Date().toISOString() });
     }).then(() => msg);
   }
   function renderSyncStatus() { document.querySelectorAll("[data-sync-status]").forEach((el) => { el.innerHTML = syncStatusHtml(); }); }
@@ -953,6 +967,7 @@ body.focus .focus-exit { display: inline-flex; }
         <div class="form-grid">
           <label class="field"><span>Tournament name</span><input id="cfg-title" value="${d("cfg-title", C.title || "Haji Duo Tournament")}"></label>
           <label class="field"><span>Season</span><input id="cfg-season" type="number" min="1" value="${d("cfg-season", C.season || 2)}"></label>
+          <label class="field"><span>Max players</span><input id="cfg-max" type="number" min="2" step="2" value="${d("cfg-max", maxPlayers())}"></label>
           <label class="field"><span>Game</span><input id="cfg-game" value="${d("cfg-game", C.game || "Arena Breakout: Infinite · PC")}"></label>
         </div>
         <label class="field"><span>Tagline</span><input id="cfg-tagline" value="${d("cfg-tagline", C.tagline)}"></label>
@@ -1012,8 +1027,11 @@ body.focus .focus-exit { display: inline-flex; }
         <form id="pool-form" class="stack">
           <div class="panel" style="padding:12px;background:var(--panel-2)" data-sync-status>${syncStatusHtml()}</div>
           <textarea id="pool-text" style="min-height:160px" placeholder="Player names, one per line">${esc(draft("pool-text", poolText))}</textarea>
-          <div class="form-actions"><button class="primary" type="submit">Save pool</button><span class="hint">Players already drawn into a duo can't be removed.</span></div>
+          <div class="form-actions"><button class="primary" type="submit">Save pool</button><span class="hint">${D.pool.length}/${maxPlayers()} players. Players already drawn into a duo can't be removed. Removing someone frees a spot for the next person on the waitlist.</span></div>
         </form>
+        <div class="stack" style="gap:6px;margin-top:14px"><h3>Waitlist · ${D.waitlist.length}</h3>
+          ${D.waitlist.length ? `<div class="list">${D.waitlist.map((w, i) => `<div class="row"><span class="mono muted">${i + 1}</span><div class="grow">${esc(w.name)}</div><button class="small danger" data-act="wl-remove" data-id="${esc(w.id)}">Remove</button></div>`).join("")}</div>` : `<p class="hint">Sign-ups after the pool is full wait here, first come first served.</p>`}
+        </div>
         <div class="form-actions" style="margin-top:14px">
           <button class="primary" data-act="start-seed-draw" ${complete < 2 ? "disabled" : ""}>Start bracket draw with ${complete} duos</button>
           <button data-act="send-duos" ${complete < 2 ? "disabled" : ""}>Skip the wheel · seed in draw order</button>
@@ -1144,6 +1162,9 @@ body.focus .focus-exit { display: inline-flex; }
     } else if (act === "reset-draw") {
       if (!arm(el)) return; const D = drawState();
       queueWrite(() => S.db.doc("draw/main").set({ pool: D.pool, duos: [], spin: null, updatedAt: new Date().toISOString() }), "Draw restarted");
+    } else if (act === "wl-remove") {
+      if (!arm(el)) return; const D = drawState(); const waitlist = D.waitlist.filter((w) => w.id !== el.dataset.id);
+      queueWrite(() => S.db.doc("draw/main").set({ ...D.d, waitlist, updatedAt: new Date().toISOString() }), "Removed from the waitlist");
     } else if (act === "start-seed-draw") {
       const D = drawState(); const done = D.duos.filter((x) => x.p2); if (done.length < 2) return;
       const T = seedState(); if (T.order.length && !arm(el)) return;
@@ -1201,8 +1222,11 @@ body.focus .focus-exit { display: inline-flex; }
       const lost = left.filter((p) => used.has(p.id));
       if (lost.length) { toast(`${lost.map((p) => p.name).join(", ")} is already in a duo. Undo or restart the draw first.`, true); return; }
       for (const p of arrived) if (!pool.some((x) => x.name.toLowerCase() === p.name.toLowerCase())) pool.push(p);
+      if (pool.length > maxPlayers()) { toast(`The pool holds ${maxPlayers()} players and this list has ${pool.length}. Remove ${pool.length - maxPlayers()}, or raise the cap in Event info.`, true); return; }
+      const waitlist = D.waitlist.filter((w) => !pool.some((x) => x.name.toLowerCase() === w.name.toLowerCase()));
+      const promoted = fillFromWaitlist(pool, waitlist);
       clearDraft("pool-"); S.poolBase = null; document.activeElement && document.activeElement.blur();
-      queueWrite(() => S.db.doc("draw/main").set({ ...D.d, pool, duos: D.duos, spin: D.spin, updatedAt: new Date().toISOString() }), `Pool saved · ${pool.length} players`);
+      queueWrite(() => S.db.doc("draw/main").set({ ...D.d, pool, waitlist, duos: D.duos, spin: D.spin, updatedAt: new Date().toISOString() }), `Pool saved · ${pool.length}/${maxPlayers()} players${promoted ? ` · ${promoted} moved up from the waitlist` : ""}`);
     } else if (f.id === "add-team" && S.isAdmin) {
       const g = (id) => $("#" + id).value.trim();
       if (!g("add-name") || !g("add-p1") || !g("add-p2")) { toast("Add a duo name and both players.", true); return; }
@@ -1213,7 +1237,7 @@ body.focus .focus-exit { display: inline-flex; }
       const g = (id) => $("#" + id).value.trim();
       const lines = (id) => $("#" + id).value.split("\n").map((s) => s.trim()).filter(Boolean);
       const patch = {
-        title: g("cfg-title") || "Haji Duo Tournament", season: parseInt(g("cfg-season"), 10) || 2, game: g("cfg-game"), tagline: g("cfg-tagline"),
+        title: g("cfg-title") || "Haji Duo Tournament", season: parseInt(g("cfg-season"), 10) || 2, maxPlayers: Math.max(2, parseInt(g("cfg-max"), 10) || 20), game: g("cfg-game"), tagline: g("cfg-tagline"),
         startsAt: fromLocalInput(g("cfg-starts")), drawAt: fromLocalInput(g("cfg-drawat")), contact: g("cfg-contact"), registerUrl: /^https:\/\//.test(g("cfg-reg")) ? g("cfg-reg") : "",
         prizes: lines("cfg-prizes").map((l) => { const [place, ...rest] = l.split("|"); return { place: place.trim(), reward: rest.join("|").trim() }; }),
         rules: lines("cfg-rules"),
