@@ -17,10 +17,6 @@
     {
       "place": "Semifinalists",
       "reward": "RM 50 each"
-    },
-    {
-      "place": "Biggest single haul",
-      "reward": "RM 50 bonus"
     }
   ],
   "rules": [
@@ -37,9 +33,10 @@
   "hallOfFame": [
     {
       "season": "Season 1",
-      "team": "Season 1 Champions",
-      "players": "Player A & Player B",
-      "note": "Placeholder: edit in Admin → Event info"
+      "title": "Champions",
+      "team": "[HAJI] Yoipan",
+      "players": "",
+      "note": ""
     }
   ],
   "placeholder": true,

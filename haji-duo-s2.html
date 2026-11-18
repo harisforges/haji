@@ -177,7 +177,13 @@ ol.rules li::marker { font-family: var(--font-mono); color: var(--amber); }
 .hof { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)); gap: 16px; }
 .hof-card { border: 1px solid var(--line); background: var(--panel); border-radius: 4px; padding: 18px; display: grid; gap: 6px; }
 .hof-card.current { border-color: var(--amber); }
-.hof-card b { font-family: var(--font-display); font-size: 1.6rem; text-transform: uppercase; line-height: 1; }
+.hof-card { align-content: start; }
+.hof-card b { font-family: var(--font-display); font-size: clamp(2rem, 4.5vw, 2.6rem); font-weight: 800; text-transform: uppercase; line-height: 1; overflow-wrap: anywhere; }
+.hof-card.mention { border-style: dashed; }
+.hof-edit { display: grid; gap: 10px; }
+.hof-row { display: grid; grid-template-columns: 110px 170px minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 1fr) auto; gap: 8px; align-items: end; padding: 10px; border: 1px solid var(--line); border-radius: 3px; background: var(--panel-2); }
+.hof-row label.field > span { font-size: .7rem; }
+@media (max-width: 900px) { .hof-row { grid-template-columns: repeat(2, minmax(0, 1fr)); } .hof-row > button { justify-self: start; } }
 .empty { border: 1px dashed var(--line); border-radius: 4px; padding: 28px 18px; text-align: center; color: var(--muted); display: grid; gap: 8px; justify-items: center; }
 .empty b { color: var(--fg); font-family: var(--font-display); text-transform: uppercase; letter-spacing: .06em; font-size: 1.1rem; }
 
@@ -816,9 +822,10 @@ body.focus .focus-exit { display: inline-flex; }
     const cur = c && c.champion ? `<div class="hof-card current"><span class="label">Season ${esc(C.season || 2)} · Champions</span><b>${teamLabel(c.champion)}</b><span class="muted">${players(c.champion)}</span>${c.runnerUp ? `<span class="hint">Runner-up: ${teamLabel(c.runnerUp)} · final ${compact(c.final.la)} – ${compact(c.final.lb)}</span>` : ""}</div>`
       : `<div class="hof-card current"><span class="label">Season ${esc(C.season || 2)} · Champions</span><b class="muted">To be decided</b><span class="hint">This spot fills itself when the final is settled.</span></div>`;
     const log = c ? raidLog(c).sort((a, b) => b.loot - a.loot) : [];
-    const haul = log[0] ? `<div class="hof-card"><span class="label">Season ${esc(C.season || 2)} · Biggest haul</span><b>${compact(log[0].loot)}</b><span class="muted">${teamLabel(log[0].team)} · ${esc(log[0].mt.name)}${log[0].mt.res.map ? " · " + esc(log[0].mt.res.map) : ""}</span></div>` : "";
-    return `<section class="panel"><div class="panel-head"><h2>Hall of fame</h2></div>
-      <div class="hof">${cur}${haul}${past.map((h) => `<div class="hof-card"><span class="label">${esc(h.season)}${h.title ? " · " + esc(h.title) : " · Champions"}</span><b>${esc(h.team)}</b>${h.players ? `<span class="muted">${esc(h.players)}</span>` : ""}${h.note ? `<span class="hint">${esc(h.note)}</span>` : ""}</div>`).join("")}</div>
+    const haul = log[0] ? `<div class="hof-card mention"><span class="label">Season ${esc(C.season || 2)} · Honorable mention</span><b>${compact(log[0].loot)}</b><span class="muted">Biggest haul · ${teamLabel(log[0].team)}</span><span class="hint">${esc(log[0].mt.name)}${log[0].mt.res.map ? " · " + esc(log[0].mt.res.map) : ""} · ${koen(log[0].loot)} Koen</span></div>` : "";
+    const isMention = (h) => /mention/i.test(h.title || "");
+    return `<section class="panel"><div class="panel-head"><h2>Hall of fame</h2>${S.isAdmin ? `<a class="hint" href="#admin">Edit in Admin → Hall of fame</a>` : ""}</div>
+      <div class="hof">${cur}${haul}${past.map((h) => `<div class="hof-card ${isMention(h) ? "mention" : ""}"><span class="label">${esc(h.season)} · ${esc(h.title || "Champions")}</span><b>${esc(h.team)}</b>${h.players ? `<span class="muted">${esc(h.players)}</span>` : ""}${h.note ? `<span class="hint">${esc(h.note)}</span>` : ""}</div>`).join("")}</div>
     </section>`;
   }
 
@@ -828,7 +835,6 @@ body.focus .focus-exit { display: inline-flex; }
     const C = cfg(); const br = S.bracket || { teams: [], matches: {} }; const teams = br.teams || []; const locked = !!br.locked;
     const d = (id, v) => esc(draft(id, v ?? ""));
     const prizesTxt = (C.prizes || []).map((p) => `${p.place} | ${p.reward}`).join("\n");
-    const hofTxt = (C.hallOfFame || []).map((h) => [h.season, h.team, h.players, h.note].map((x) => x || "").join(" | ")).join("\n");
     const hasResults = Object.keys(br.matches || {}).length > 0;
     return `
     <section class="panel"><div class="panel-head"><h2>Teams & bracket</h2><span class="chip ${locked ? "kia" : "done"}">${locked ? "Bracket locked" : "Bracket open for changes"}</span></div>
@@ -873,11 +879,32 @@ body.focus .focus-exit { display: inline-flex; }
         </div>
         <label class="field"><span>Prizes · one per line: Place | Reward</span><textarea id="cfg-prizes">${d("cfg-prizes", prizesTxt)}</textarea></label>
         <label class="field"><span>Rules · one per line</span><textarea id="cfg-rules" style="min-height:200px">${d("cfg-rules", (C.rules || []).join("\n"))}</textarea></label>
-        <label class="field"><span>Past champions · one per line: Season | Duo | Players | Note</span><textarea id="cfg-hof">${d("cfg-hof", hofTxt)}</textarea></label>
         <div class="form-actions"><button class="primary" type="submit">Save event info</button><span class="hint">Times use your local time zone.</span></div>
       </form>
-    </section>`;
+    </section>
+    ${hofEditor()}`;
   }
+
+  function hofRows() {
+    if (!S.hofRows) S.hofRows = (Array.isArray(cfg().hallOfFame) ? cfg().hallOfFame : []).map((h) => ({ season: h.season || "", title: h.title || "Champions", team: h.team || "", players: h.players || "", note: h.note || "" }));
+    return S.hofRows;
+  }
+  function hofEditor() {
+    const rows = hofRows();
+    const f = (i, k, label, ph) => `<label class="field"><span>${label}</span><input id="hof-${i}-${k}" value="${esc(rows[i][k])}" placeholder="${ph}" ${k === "title" ? 'list="hof-titles"' : ""}></label>`;
+    return `<section class="panel"><div class="panel-head"><h2>Hall of fame</h2><span class="hint">Past seasons. Season ${esc(cfg().season || 2)}'s champion and biggest haul are added automatically.</span></div>
+      <datalist id="hof-titles"><option value="Champions"><option value="Runner-up"><option value="Honorable mention"><option value="MVP"></datalist>
+      <div class="hof-edit">
+        ${rows.length ? rows.map((r, i) => `<div class="hof-row">${f(i, "season", "Season", "Season 1")}${f(i, "title", "Award", "Champions")}${f(i, "team", "Name (shown big)", "Haji Yoipan")}${f(i, "players", "Players or detail", "Player A & Player B")}${f(i, "note", "Note", "Optional")}<button type="button" class="small danger" data-act="hof-remove" data-i="${i}">Remove</button></div>`).join("") : `<p class="hint">No past entries yet.</p>`}
+        <div class="form-actions">
+          <button type="button" data-act="hof-add" data-title="Champions">Add champions</button>
+          <button type="button" data-act="hof-add" data-title="Honorable mention">Add honorable mention</button>
+          <button type="button" class="primary" data-act="hof-save">Save hall of fame</button>
+          ${S.hofRows && JSON.stringify(S.hofRows) !== JSON.stringify(hofRowsFrom(cfg())) ? `<span class="hint" style="color:var(--amber)">Unsaved changes</span>` : ""}
+        </div>
+      </div></section>`;
+  }
+  function hofRowsFrom(C) { return (Array.isArray(C.hallOfFame) ? C.hallOfFame : []).map((h) => ({ season: h.season || "", title: h.title || "Champions", team: h.team || "", players: h.players || "", note: h.note || "" })); }
 
   // ---------- modal ----------
   function openMatch(key) { S.modalKey = key; renderModal(); }
@@ -920,7 +947,10 @@ body.focus .focus-exit { display: inline-flex; }
   function toast(msg, err) { const r = $("#toast-root"); r.innerHTML = `<div class="toast ${err ? "err" : ""}">${esc(msg)}</div>`; clearTimeout(toastT); toastT = setTimeout(() => { r.innerHTML = ""; }, 2600); }
 
   // ---------- events ----------
-  document.addEventListener("input", (e) => { const el = e.target; if (el.id && /^(pool-|cfg-|add-|m-|sn-)/.test(el.id)) S.draft[el.id] = el.type === "checkbox" ? el.checked : el.value; });
+  document.addEventListener("input", (e) => {
+    const el = e.target; if (el.id && /^(pool-|cfg-|add-|m-|sn-)/.test(el.id)) S.draft[el.id] = el.type === "checkbox" ? el.checked : el.value;
+    const m = el.id && el.id.match(/^hof-(\d+)-(\w+)$/); if (m && S.hofRows && S.hofRows[+m[1]]) S.hofRows[+m[1]][m[2]] = el.value;
+  });
   document.addEventListener("change", (e) => {
     const el = e.target; if (el.id && /^(pool-|cfg-|add-|m-|sn-)/.test(el.id)) S.draft[el.id] = el.type === "checkbox" ? el.checked : el.value;
     if (el.dataset && el.dataset.team && el.id.startsWith("sn-") && S.isAdmin && S.db) {
@@ -962,6 +992,12 @@ body.focus .focus-exit { display: inline-flex; }
     }
     if (!S.isAdmin) return;
     const teams = teamsCopy();
+    if (act === "hof-add") { const rows = hofRows(); rows.push({ season: `Season ${Math.max(1, (cfg().season || 2) - 1)}`, title: el.dataset.title, team: "", players: "", note: "" }); render(); return; }
+    if (act === "hof-remove") { hofRows().splice(+el.dataset.i, 1); render(); return; }
+    if (act === "hof-save") {
+      const list = hofRows().map((r) => ({ season: r.season.trim(), title: r.title.trim() || "Champions", team: r.team.trim(), players: r.players.trim(), note: r.note.trim() })).filter((r) => r.team);
+      S.hofRows = null; saveConfig({ hallOfFame: list }, "Hall of fame saved"); return;
+    }
     if (act === "spin") {
       const D = drawState(); if (!D.remaining.length || S.animating) return;
       const pick = D.remaining[randInt(D.remaining.length)];
@@ -1029,7 +1065,6 @@ body.focus .focus-exit { display: inline-flex; }
         startsAt: fromLocalInput(g("cfg-starts")), drawAt: fromLocalInput(g("cfg-drawat")), contact: g("cfg-contact"),
         prizes: lines("cfg-prizes").map((l) => { const [place, ...rest] = l.split("|"); return { place: place.trim(), reward: rest.join("|").trim() }; }),
         rules: lines("cfg-rules"),
-        hallOfFame: lines("cfg-hof").map((l) => { const [season, team, pl, note] = l.split("|").map((s) => (s || "").trim()); return { season, team, players: pl, note }; }),
         placeholder: false,
       };
       clearDraft("cfg-"); document.activeElement && document.activeElement.blur();
