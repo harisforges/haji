@@ -163,11 +163,6 @@ tr.champ td { background: color-mix(in srgb, var(--amber) 8%, transparent); }
 .sched-item .t { font-family: var(--font-mono); font-size: .9rem; }
 .sched-item .vs { min-width: 0; overflow-wrap: anywhere; }
 .sched-item .vs small { display: block; color: var(--muted); font-size: .78rem; }
-.vote-row { display: grid; gap: 4px; }
-.vote-bar { height: 6px; background: var(--panel-2); border-radius: 2px; overflow: hidden; }
-.vote-bar i { display: block; height: 100%; background: var(--amber); }
-.vote-btn { width: 100%; justify-content: space-between; text-transform: none; letter-spacing: normal; font-family: var(--font-body); font-weight: 500; font-size: .9rem; }
-.vote-btn.mine { border-color: var(--amber); }
 ol.rules { margin: 0; padding-left: 1.4em; display: grid; gap: 10px; max-width: 70ch; }
 ol.rules li::marker { font-family: var(--font-mono); color: var(--amber); }
 .prize { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); align-items: baseline; }
@@ -287,13 +282,14 @@ body.focus .focus-exit { display: inline-flex; }
   const S = {
     db: null, user: null, uid: null, isAdmin: false, canWrite: null,
     dbOk: false, loading: true, slow: false, readOnlyHit: false,
-    config: null, bracket: null, drawDoc: null, votes: [],
-    got: { config: false, bracket: false, draw: false, votes: false },
-    animating: null, lastSpinSeen: undefined, sound: false,
+    config: null, bracket: null, drawDoc: null, seedDoc: null,
+    got: { config: false, bracket: false, draw: false, seed: false },
+    animating: null, lastSpinSeen: {}, sound: false,
+    sync: { state: "idle" }, poolBase: null,
     draft: {}, modalKey: null,
   };
   const VIEWS = [
-    ["overview", "Overview"], ["draw", "Duo draw"], ["bracket", "Bracket"], ["standings", "Standings"], ["schedule", "Schedule"],
+    ["overview", "Overview"], ["draw", "Duo draw"], ["bracket-draw", "Bracket draw"], ["bracket", "Bracket"], ["standings", "Standings"], ["schedule", "Schedule"],
     ["rules", "Rules & prizes"], ["hall-of-fame", "Hall of fame"], ["admin", "Admin"],
   ];
   let view = "overview";
@@ -427,8 +423,9 @@ body.focus .focus-exit { display: inline-flex; }
     const onErr = (e) => { console.warn(e); clearTimeout(slowTimer); S.loading = false; S.slow = true; render(); };
     db.doc("config/main").onSnapshot((s) => { S.config = s.exists ? s.data() : null; settle("config", s); }, onErr);
     db.doc("bracket/main").onSnapshot((s) => { S.bracket = s.exists ? s.data() : null; settle("bracket", s); if (S.modalKey) renderModal(); }, onErr);
-    db.doc("draw/main").onSnapshot((s) => { S.drawDoc = s.exists ? s.data() : null; onDrawSnapshot(); settle("draw", s); }, onErr);
-    db.collection("votes").onSnapshot((q) => { S.votes = q.docs.map((d) => ({ id: d.id, ...d.data() })); settle("votes", q); }, onErr);
+    db.doc("draw/main").onSnapshot((s) => { S.drawDoc = s.exists ? s.data() : null; onSpinSnapshot("duo"); settle("draw", s); if (S.syncPending) { S.syncPending = false; syncNow(); } }, onErr);
+    db.doc("seeddraw/main").onSnapshot((s) => { S.seedDoc = s.exists ? s.data() : null; onSpinSnapshot("seed"); settle("seed", s); }, onErr);
+    if (S.isAdmin && use) startSync(use);
   }
 
   // ---------- render ----------
@@ -438,9 +435,9 @@ body.focus .focus-exit { display: inline-flex; }
     if (ae && $("#main").contains(ae) && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) && ae.type !== "checkbox") { pendingRender = true; renderChrome(); return; }
     pendingRender = false;
     renderChrome();
-    const fn = { overview: vOverview, bracket: vBracket, standings: vStandings, schedule: vSchedule, draw: vDraw, rules: vRules, "hall-of-fame": vHall, admin: vAdmin }[view] || vOverview;
+    const fn = { overview: vOverview, bracket: vBracket, standings: vStandings, schedule: vSchedule, draw: vDraw, "bracket-draw": vSeedDraw, rules: vRules, "hall-of-fame": vHall, admin: vAdmin }[view] || vOverview;
     $("#main").innerHTML = notices() + fn();
-    if (view === "draw") mountWheel();
+    if (view === "draw") mountWheel("duo"); else if (view === "bracket-draw") mountWheel("seed");
     tick();
   }
   function renderChrome() {
@@ -456,7 +453,7 @@ body.focus .focus-exit { display: inline-flex; }
     const out = [];
     if (!S.loading && !S.dbOk) out.push(`<div class="banner"><b>Live data unavailable.</b> Open this page on claude.ai while signed in to see the duo draw, bracket and results.</div>`);
     else if (S.slow) out.push(`<div class="banner"><b>Can't reach the live data right now.</b> What you see may be out of date; it updates on its own once the connection returns.</div>`);
-    if (S.bracket && S.bracket.example) out.push(`<div class="banner"><b>Example bracket.</b> These duos and results are sample data so you can see how the page works.${S.isAdmin ? " They are replaced when you send the drawn duos to the bracket." : ""}</div>`);
+    if (S.bracket && S.bracket.example) out.push(`<div class="banner"><b>Example bracket.</b> These duos and results are sample data so you can see how the page works.${S.isAdmin ? " They are replaced when the bracket draw finishes." : ""}</div>`);
     if (S.isAdmin && cfg().placeholder) out.push(`<div class="banner"><b>Placeholder event info.</b> Dates, prizes, rules and Season 1 champions are sample text. Edit them in Admin → Event info.</div>`);
     return out.join("");
   }
@@ -480,7 +477,8 @@ body.focus .focus-exit { display: inline-flex; }
         <h1>${esc(C.title || "Haji Duo Tournament")}<em>Season ${esc(C.season || 2)}</em></h1>
         ${C.tagline ? `<p class="tag">${esc(C.tagline)}</p>` : ""}
         <div class="cta">
-          <a class="btn primary" href="#draw">${D.duos.length && !D.remaining.length ? "See the drawn duos" : "Watch the duo draw"}</a>
+          ${C.registerUrl && !D.duos.length ? `<a class="btn primary" href="${esc(C.registerUrl)}" target="_blank" rel="noopener">Sign up to play</a>` : ""}
+          <a class="btn ${C.registerUrl && !D.duos.length ? "" : "primary"}" href="#draw">${D.duos.length && !D.remaining.length ? "See the drawn duos" : "Watch the duo draw"}</a>
           <a class="btn" href="#bracket">View bracket</a>
           <a class="btn" href="#rules">Rules</a>
         </div>
@@ -494,7 +492,6 @@ body.focus .focus-exit { display: inline-flex; }
       <div class="stat"><div class="label">Loot extracted</div><b>${compact(total)}</b><small>Koen across all raids</small></div>
     </section>
     <section class="grid-2">
-      <div class="stack">
         <div class="panel">
           <div class="panel-head"><h3>${nu.live.length ? "Live now" : "Up next"}</h3><a href="#schedule" class="hint">Full schedule</a></div>
           ${(() => {
@@ -509,8 +506,6 @@ body.focus .focus-exit { display: inline-flex; }
             <div class="row"><span class="mono muted">#${i + 1}</span><div class="grow"><b>${teamLabel(x.team)}</b> <span class="muted">· ${esc(x.mt.name)}${x.mt.res.map ? " · " + esc(x.mt.res.map) : ""}</span></div><span class="mono">${koen(x.loot)} <span class="muted">Koen</span></span></div>`).join("")}</div>`
           : `<div class="empty"><b>No raids yet</b><span>The top extractions of the season show up here.</span></div>`}
         </div>
-      </div>
-      ${votePanel(c)}
     </section>`;
   }
   function countdownBlock(c) {
@@ -537,26 +532,6 @@ body.focus .focus-exit { display: inline-flex; }
     }
   }
   setInterval(tick, 1000);
-
-  function votePanel(c) {
-    const head = `<div class="panel-head"><h3>Who takes Season ${esc(cfg().season || 2)}?</h3><span class="label">Fan pick</span></div>`;
-    if (!c) return `<div class="panel">${head}<div class="empty"><b>Picks open with the bracket</b><span>Once duos are drawn, everyone can back a champion.</span></div></div>`;
-    const counts = new Map(); for (const v of S.votes) if (v.teamId) counts.set(v.teamId, (counts.get(v.teamId) || 0) + 1);
-    const totalV = [...counts.values()].reduce((a, b) => a + b, 0);
-    const mine = S.uid ? (S.votes.find((v) => v.id === S.uid) || {}).teamId : null;
-    const closed = !!c.champion;
-    const canVote = S.dbOk && S.uid && !closed && !S.readOnlyHit;
-    const out = new Set(standings(c).filter((r) => r.out != null).map((r) => r.t.id));
-    const rows = c.teams.slice().sort((a, b) => (counts.get(b.id) || 0) - (counts.get(a.id) || 0)).map((t) => {
-      const n = counts.get(t.id) || 0; const pct = totalV ? Math.round((n / totalV) * 100) : 0;
-      return `<div class="vote-row">
-        <button class="vote-btn ${mine === t.id ? "mine" : ""}" ${canVote ? `data-act="vote" data-team="${esc(t.id)}"` : "disabled"} aria-pressed="${mine === t.id}">
-          <span>${teamLabel(t)}${out.has(t.id) ? ` <span class="chip kia">Out</span>` : ""}${mine === t.id ? ` <span class="chip amber">Your pick</span>` : ""}</span><span class="mono muted">${pct}% · ${n}</span></button>
-        <div class="vote-bar"><i style="width:${pct}%"></i></div></div>`;
-    }).join("");
-    const note = closed ? "Picks are closed. The champion has been crowned." : !S.uid ? "Sign in on claude.ai to make a pick." : "Tap a duo to back them. You can change your pick until the final ends.";
-    return `<div class="panel">${head}<div class="stack">${rows}</div><p class="hint" style="margin-top:12px">${note} ${totalV} pick${totalV === 1 ? "" : "s"} so far.</p></div>`;
-  }
 
   // ----- bracket -----
   function slotHtml(mt, slot, l, side) {
@@ -630,7 +605,7 @@ body.focus .focus-exit { display: inline-flex; }
     for (const m of timed) { const k = dayFmt.format(validDate(m.res.time)); if (!days.has(k)) days.set(k, []); days.get(k).push(m); }
     let html = [...days].map(([d, list]) => `<div class="sched-day"><div class="label" style="margin-bottom:6px">${esc(d)}</div>${list.map(schedItem).join("")}</div>`).join("");
     if (untimed.length) html += `<div class="sched-day"><div class="label" style="margin-bottom:6px">Time to be announced</div>${untimed.map(schedItem).join("")}</div>`;
-    return `<section class="panel"><div class="panel-head"><h2>Schedule</h2><span class="hint">Times shown in your local time zone</span></div>${html}</section>`;
+    return `<section class="panel"><div class="panel-head"><h2>Schedule</h2><span class="hint">Times shown in your local time zone${S.isAdmin ? ' · <a href="#admin">set times in Admin → Results &amp; schedule</a>' : ""}</span></div>${html}</section>`;
   }
 
   // ----- duo draw -----
@@ -689,6 +664,60 @@ body.focus .focus-exit { display: inline-flex; }
     </section>`;
   }
 
+  // ----- bracket draw -----
+  function seedState() {
+    const d = S.seedDoc || {};
+    const entries = Array.isArray(d.entries) ? d.entries : [];
+    const order = Array.isArray(d.order) ? d.order : [];
+    const byId = new Map(entries.map((e) => [e.id, e]));
+    const placed = new Set(order);
+    const remaining = entries.filter((e) => !placed.has(e.id));
+    return { d, entries, order, byId, remaining, spin: d.spin || null };
+  }
+  function vSeedDraw() {
+    const T = seedState(); const n = T.entries.length;
+    const hidden = S.animating && T.spin && S.animating === T.spin.id ? T.spin.pick : null;
+    const shownOrder = hidden ? T.order.filter((id) => id !== hidden) : T.order;
+    const size = n >= 2 ? 2 ** Math.ceil(Math.log2(n)) : 0;
+    const so = size ? seedOrder(size) : [];
+    const slot = (seed) => {
+      if (seed > n) return `<div class="slot bye"><span class="seed"></span><span class="nm">Bye</span><span class="lv"></span></div>`;
+      const id = shownOrder[seed - 1];
+      if (!id) return `<div class="slot tbd"><span class="seed">${seed}</span><span class="nm">${seed === shownOrder.length + 1 && !hidden ? "Next spin" : "?"}</span><span class="lv"></span></div>`;
+      const e = T.byId.get(id) || {};
+      return `<div class="slot win"><span class="seed">${seed}</span><span class="nm" title="${esc(e.label)}">${esc(e.label)}</span><span class="lv"></span></div>`;
+    };
+    const pairs = size ? Array.from({ length: size / 2 }, (_, m) => `<div class="match" style="cursor:default"><div class="match-meta"><span>Raid ${m + 1}</span><span>${esc(roundName(0, Math.log2(size)))}</span></div>${slot(so[2 * m])}${slot(so[2 * m + 1])}</div>`).join("") : "";
+    let reveal;
+    if (S.animating && T.spin) reveal = `<div class="reveal spinning" id="reveal"><span class="label">Spinning for seed ${T.order.length}…</span><b>?</b></div>`;
+    else if (T.spin && T.byId.get(T.spin.pick)) { const at = T.order.indexOf(T.spin.pick) + 1; reveal = `<div class="reveal" id="reveal"><span class="label">Seed ${at}</span><b>${esc(T.byId.get(T.spin.pick).label)}</b></div>`; }
+    else reveal = `<div class="reveal" id="reveal"><span class="label">${n ? "Ready to draw the bracket" : "Waiting for the duo draw"}</span></div>`;
+    const admin = S.isAdmin ? `
+      <div class="spin-controls"><button class="primary big" data-act="seed-spin" ${!T.remaining.length || S.animating ? "disabled" : ""}>${T.remaining.length ? `Spin · seed ${T.order.length + 1}` : n ? "Bracket set" : "No duos yet"}</button></div>
+      <div class="spin-controls">
+        <button class="small" data-act="seed-undo" ${!T.order.length || S.animating ? "disabled" : ""}>Undo last pick</button>
+        <button class="small" data-act="sound" aria-pressed="${S.sound}">Sound ${S.sound ? "on" : "off"}</button>
+        <button class="small" data-act="focus">Stream mode</button>
+        <button class="small focus-exit" data-act="focus">Exit stream mode</button>
+      </div>${!n ? `<p class="hint">Start the bracket draw from Admin → Duo draw once the duos are drawn.</p>` : ""}` : `
+      <div class="spin-controls"><button class="small" data-act="sound" aria-pressed="${S.sound}">Sound ${S.sound ? "on" : "off"}</button><button class="small" data-act="focus">Full view</button><button class="small focus-exit" data-act="focus">Exit full view</button></div>
+      <p class="hint">Each spin places one duo into the next bracket slot. Seed 1 meets the last seed.</p>`;
+    return `<section class="draw">
+      <div class="panel wheel-panel">
+        <div class="panel-head" style="width:100%;margin:0"><h2>Bracket draw</h2><span class="mono muted">${T.remaining.length + (hidden ? 1 : 0)} duos left</span></div>
+        <div class="wheel-stage"><div class="pointer" aria-hidden="true"></div><div id="wheel-host" role="img" aria-label="Spin wheel of duos not yet placed in the bracket"></div></div>
+        ${reveal}${admin}
+      </div>
+      <div class="stack">
+        <div class="panel"><div class="panel-head"><h3>${size ? esc(roundName(0, Math.log2(size))) + " matchups" : "Matchups"}</h3><span class="mono muted">${shownOrder.length}/${n}</span></div>
+          ${size ? `<div class="stack" style="gap:8px">${pairs}</div>` : `<div class="empty"><b>No duos yet</b><span>Matchups fill in here, one spin at a time.</span></div>`}
+          ${n && !T.remaining.length && !hidden ? `<p class="hint" style="margin-top:10px">The bracket is set. <a href="#bracket">See the bracket</a>.</p>` : ""}
+        </div>
+      </div>
+    </section>`;
+  }
+  const entryLabel = (name, p1, p2) => (/^Duo \d+$/.test(name || "") && p1 && p2 ? `${p1} & ${p2}` : name);
+
   // ---------- wheel ----------
   const wheel = { canvas: null, items: [], rot: 0, hi: null, anim: 0, holdUntil: 0 };
   const reduceMotion = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -699,10 +728,17 @@ body.focus .focus-exit { display: inline-flex; }
     }
     return wheel.canvas;
   }
-  function mountWheel() {
+  const KIND_VIEW = { duo: "draw", seed: "bracket-draw" };
+  function wheelItems(kind) {
+    if (kind === "seed") { const T = seedState(); return { items: T.remaining.map((e) => ({ id: e.id, name: e.label })), empty: T.entries.length ? "ALL DUOS PLACED" : "WAITING FOR DUOS" }; }
+    const D = drawState(); return { items: D.remaining.map((p) => ({ id: p.id, name: p.name })), empty: D.pool.length ? "ALL PLAYERS DRAWN" : "NO PLAYERS YET" };
+  }
+  function mountWheel(kind) {
     const host = $("#wheel-host"); if (!host) return;
     host.appendChild(wheelCanvas());
-    if (!wheel.anim && Date.now() > wheel.holdUntil) { wheel.items = drawState().remaining.map((p) => ({ id: p.id, name: p.name })); wheel.rot = 0; wheel.hi = null; }
+    const w = wheelItems(kind); wheel.empty = w.empty;
+    if (wheel.kind !== kind) { wheel.kind = kind; if (!wheel.anim) wheel.holdUntil = 0; }
+    if (!wheel.anim && Date.now() > wheel.holdUntil) { wheel.items = w.items; wheel.rot = 0; wheel.hi = null; }
     drawWheel();
   }
   function drawWheel() {
@@ -719,7 +755,7 @@ body.focus .focus-exit { display: inline-flex; }
     if (!n) {
       g.beginPath(); g.arc(cx, cx, r, 0, Math.PI * 2); g.fillStyle = tok("--panel-2"); g.fill(); g.stroke();
       g.fillStyle = tok("--muted"); g.font = `600 ${Math.max(14, size / 22)}px ${tok("--font-display")}`; g.textAlign = "center"; g.textBaseline = "middle";
-      g.fillText(drawState().pool.length ? "ALL PLAYERS DRAWN" : "NO PLAYERS YET", cx, cx); return;
+      g.fillText(wheel.empty || "", cx, cx); return;
     }
     const slice = (Math.PI * 2) / n;
     const fs = Math.max(9, Math.min(size / 20, (r * slice) * 0.55, 26));
@@ -739,15 +775,17 @@ body.focus .focus-exit { display: inline-flex; }
     g.beginPath(); g.arc(cx, cx, r * 0.13, 0, Math.PI * 2); g.fillStyle = tok("--panel"); g.fill(); g.lineWidth = 3; g.strokeStyle = tok("--amber"); g.stroke();
   }
   function hash01(str) { let h = 2166136261; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0) / 4294967296; }
-  function onDrawSnapshot() {
-    const spin = S.drawDoc && S.drawDoc.spin;
-    const firstLoad = S.lastSpinSeen === undefined;
+  function onSpinSnapshot(kind) {
+    const doc = kind === "seed" ? S.seedDoc : S.drawDoc;
+    const spin = doc && doc.spin;
+    const firstLoad = !(kind in S.lastSpinSeen);
     const sid = spin ? spin.id : null;
-    if (sid === S.lastSpinSeen) return;
-    S.lastSpinSeen = sid;
-    if (!spin) { cancelAnimationFrame(wheel.anim); wheel.anim = 0; S.animating = null; wheel.holdUntil = 0; return; }
+    if (!firstLoad && sid === S.lastSpinSeen[kind]) return;
+    S.lastSpinSeen[kind] = sid;
+    if (!spin) { if (wheel.kind === kind) { cancelAnimationFrame(wheel.anim); wheel.anim = 0; S.animating = null; wheel.holdUntil = 0; } return; }
     const age = Date.now() - (validDate(spin.at) || 0);
-    if (view !== "draw" || (firstLoad && age > 15000) || !Array.isArray(spin.wheel)) { S.animating = null; wheel.holdUntil = 0; return; }
+    if (view !== KIND_VIEW[kind] || (firstLoad && age > 15000) || !Array.isArray(spin.wheel)) { if (wheel.kind === kind) { S.animating = null; wheel.holdUntil = 0; } return; }
+    wheel.kind = kind;
     animateSpin(spin);
   }
   function animateSpin(spin) {
@@ -768,7 +806,7 @@ body.focus .focus-exit { display: inline-flex; }
       if (t < 1) { wheel.anim = requestAnimationFrame(step); return; }
       wheel.anim = 0; wheel.hi = spin.pick; S.animating = null; wheel.holdUntil = Date.now() + 4000;
       drawWheel(); sfx("win"); render();
-      setTimeout(() => { if (!wheel.anim && view === "draw") mountWheel(); }, 4100);
+      setTimeout(() => { if (!wheel.anim && view === KIND_VIEW[wheel.kind]) mountWheel(wheel.kind); }, 4100);
     };
     wheel.anim = requestAnimationFrame(step);
   }
@@ -780,6 +818,65 @@ body.focus .focus-exit { display: inline-flex; }
     if (kind === "tick") blip(1500, 0, 0.03, 0.04, "square");
     else { blip(660, 0, 0.25, 0.12, "triangle"); blip(990, 0.12, 0.45, 0.12, "triangle"); }
   }
+  // ---------- sign-up sync (owner only) ----------
+  const SIGNUP = { server: "ecomforges", tool: "breakdance-get-form-submissions", post_id: 289, form_element_id: 106 };
+  let syncing = false, syncTimer = null;
+  async function startSync(use) {
+    const mcp = await use("mcp").catch(() => null);
+    if (!mcp) { S.sync = { state: "off", msg: "Sign-up sync isn't available in this view. Open the page on claude.ai to sync." }; renderSyncStatus(); return; }
+    S.mcp = mcp;
+    if (S.got.draw) syncNow(); else S.syncPending = true;
+    syncTimer = setInterval(() => { if (!document.hidden && S.sync.state !== "allow" && !S.sync.hard) syncNow(); }, 30000);
+  }
+  async function syncNow(manual) {
+    if (syncing || !S.mcp || !S.db) return;
+    syncing = true;
+    try {
+      const subs = [];
+      for (let page = 0, offset = 0; page < 20; page++, offset += 100) {
+        const r = await S.mcp.callTool(SIGNUP.server, SIGNUP.tool, { post_id: SIGNUP.post_id, form_element_id: SIGNUP.form_element_id, limit: 100, offset }, { cache: false });
+        const list = r && r.payload && Array.isArray(r.payload.submissions) ? r.payload.submissions : [];
+        subs.push(...list);
+        if (list.length < 100) break;
+      }
+      const last = await importSignups(subs);
+      S.sync = { state: "ok", at: Date.now(), total: subs.length, last: last || (S.sync && S.sync.last) || "" };
+      if (manual) toast("Sign-ups checked");
+    } catch (e) {
+      const code = e && e.code;
+      if (code === "approval_required" || code === "not_in_manifest" || code === "consent_required") S.sync = { state: "allow" };
+      else if (code === "needs_reauth") S.sync = { state: "error-hard", msg: "Reconnect ecomforges in claude.ai Settings → Connectors, then reload." };
+      else if (code === "server_not_connected" || code === "selection_required") S.sync = { state: "error-hard", msg: "Connect ecomforges in claude.ai Settings → Connectors, then reload." };
+      else if (code === "blocked_by_policy") S.sync = { state: "error-hard", msg: "Your organization blocks this connector here." };
+      else S.sync = { state: "error", msg: "Couldn't reach ecomforges.com. Trying again in 30 seconds." };
+      if (S.sync.state === "error-hard") S.sync = { ...S.sync, state: "error", hard: true };
+      console.warn(e);
+    } finally { syncing = false; renderSyncStatus(); }
+  }
+  function importSignups(subs) {
+    const D0 = drawState(); const seen0 = new Set((Array.isArray(D0.d.signupsSeen) ? D0.d.signupsSeen : []).map(String));
+    if (!subs.some((s) => s && s.id != null && !seen0.has(String(s.id)))) return Promise.resolve("");
+    let msg = "";
+    return queueWrite(() => {
+      const D = drawState(); const seen = new Set((Array.isArray(D.d.signupsSeen) ? D.d.signupsSeen : []).map(String));
+      const fresh = subs.filter((s) => s && s.id != null && !seen.has(String(s.id))).sort((a, b) => String(a.date).localeCompare(String(b.date)));
+      if (!fresh.length) return Promise.resolve();
+      const pool = D.pool.slice(); const names = new Set(pool.map((p) => p.name.toLowerCase()));
+      let added = 0, dup = 0;
+      for (const s of fresh) {
+        seen.add(String(s.id));
+        const nm = String((s.fields && s.fields.name) || "").replace(/\s+/g, " ").trim().slice(0, 32);
+        if (!nm) continue;
+        if (names.has(nm.toLowerCase())) { dup++; continue; }
+        names.add(nm.toLowerCase()); pool.push({ id: "w" + s.id, name: nm, src: "signup" }); added++;
+      }
+      msg = `${added} added${dup ? `, ${dup} duplicate name${dup === 1 ? "" : "s"} skipped` : ""} at ${timeFmt.format(new Date())}`;
+      if (added) toast(`${added} new sign-up${added === 1 ? "" : "s"} added to the pool`);
+      return S.db.doc("draw/main").set({ ...D.d, pool, duos: D.duos, spin: D.spin, signupsSeen: [...seen], updatedAt: new Date().toISOString() });
+    }).then(() => msg);
+  }
+  function renderSyncStatus() { document.querySelectorAll("[data-sync-status]").forEach((el) => { el.innerHTML = syncStatusHtml(); }); }
+
   function randInt(n) { const a = new Uint32Array(1); crypto.getRandomValues(a); return a[0] % n; }
 
   // ----- rules -----
@@ -837,10 +934,10 @@ body.focus .focus-exit { display: inline-flex; }
           </form>
         </div>
         <div class="stack">
-          <h3>Bracket seeds · ${teams.length}</h3>
-          ${teams.length ? `<div class="list">${teams.map((t, i) => `<div class="row"><span class="mono muted">${i + 1}</span><div class="grow"><input id="sn-${esc(t.id)}" data-team="${esc(t.id)}" maxlength="32" value="${d("sn-" + t.id, t.name)}" aria-label="Duo name" style="padding:4px 8px"><div class="muted" style="font-size:.85rem;margin-top:3px">${players(t)}</div></div>
+          <h3>Duos & seeds · ${teams.length}</h3>
+          ${teams.length ? `<div class="list">${teams.map((t, i) => `<div class="row"><span class="mono muted">${i + 1}</span><div class="grow" style="display:grid;gap:4px"><input id="st-name-${esc(t.id)}" data-team="${esc(t.id)}" data-field="name" maxlength="32" value="${d("st-name-" + t.id, t.name)}" aria-label="Duo name" style="padding:4px 8px;font-weight:600"><div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:4px"><input id="st-p1-${esc(t.id)}" data-team="${esc(t.id)}" data-field="p1" maxlength="32" value="${d("st-p1-" + t.id, t.p1)}" aria-label="Player 1" placeholder="Player 1" style="padding:4px 8px;font-size:.85rem"><input id="st-p2-${esc(t.id)}" data-team="${esc(t.id)}" data-field="p2" maxlength="32" value="${d("st-p2-" + t.id, t.p2)}" aria-label="Player 2" placeholder="Player 2" style="padding:4px 8px;font-size:.85rem"></div></div>
             <div class="form-actions"><button class="small" data-act="seed-up" data-i="${i}" ${locked || i === 0 ? "disabled" : ""} aria-label="Move up">▲</button><button class="small" data-act="seed-down" data-i="${i}" ${locked || i === teams.length - 1 ? "disabled" : ""} aria-label="Move down">▼</button><button class="small danger" data-act="seed-remove" data-i="${i}" ${locked ? "disabled" : ""}>Remove</button></div></div>`).join("")}</div>` : `<p class="hint">No duos in the bracket yet. Add registrations from the left.</p>`}
-          <p class="hint">Edit a duo's name and click away to save it. Seed 1 meets the lowest seed. Empty slots become byes for the top seeds. ${teams.length >= 2 ? `Current size: ${2 ** Math.ceil(Math.log2(teams.length))} slots, ${2 ** Math.ceil(Math.log2(teams.length)) - teams.length} bye(s).` : ""}</p>
+          <p class="hint">Edit a duo's name or players and click away to save. Seed 1 meets the lowest seed. Empty slots become byes for the top seeds. ${teams.length >= 2 ? `Current size: ${2 ** Math.ceil(Math.log2(teams.length))} slots, ${2 ** Math.ceil(Math.log2(teams.length)) - teams.length} bye(s).` : ""}</p>
           <div class="form-actions">
             <button data-act="shuffle" ${locked || teams.length < 2 ? "disabled" : ""}>Random draw</button>
             ${locked ? `<button data-act="unlock">Unlock bracket</button>` : `<button class="primary" data-act="lock" ${teams.length < 2 ? "disabled" : ""}>Lock bracket</button>`}
@@ -863,6 +960,7 @@ body.focus .focus-exit { display: inline-flex; }
           <label class="field"><span>Tournament starts</span><input id="cfg-starts" type="datetime-local" value="${d("cfg-starts", toLocalInput(C.startsAt))}"></label>
           <label class="field"><span>Live duo draw</span><input id="cfg-drawat" type="datetime-local" value="${d("cfg-drawat", toLocalInput(C.drawAt))}"></label>
           <label class="field"><span>Contact line</span><input id="cfg-contact" value="${d("cfg-contact", C.contact)}"></label>
+          <label class="field"><span>Sign-up page link</span><input id="cfg-reg" value="${d("cfg-reg", C.registerUrl)}" placeholder="https://"></label>
         </div>
         <label class="field"><span>Prizes · one per line: Place | Reward</span><textarea id="cfg-prizes">${d("cfg-prizes", prizesTxt)}</textarea></label>
         <label class="field"><span>Rules · one per line</span><textarea id="cfg-rules" style="min-height:200px">${d("cfg-rules", (C.rules || []).join("\n"))}</textarea></label>
@@ -893,26 +991,41 @@ body.focus .focus-exit { display: inline-flex; }
   }
   function hofRowsFrom(C) { return (Array.isArray(C.hallOfFame) ? C.hallOfFame : []).map((h) => ({ season: h.season || "", title: h.title || "Champions", team: h.team || "", players: h.players || "", note: h.note || "" })); }
 
+  function syncStatusHtml() {
+    const st = S.sync || {}; const url = cfg().registerUrl;
+    const link = url ? `<span class="mono" style="overflow-wrap:anywhere">${esc(url)}</span> <button type="button" class="small" data-act="copy-link">Copy link</button>` : "";
+    let line;
+    if (st.state === "ok") line = `<span class="chip done">Syncing</span> Checked ${esc(timeFmt.format(new Date(st.at)))} · ${st.total} sign-up${st.total === 1 ? "" : "s"} on the form${st.last ? " · " + esc(st.last) : ""}`;
+    else if (st.state === "allow") line = `<span class="chip amber">Needs your OK</span> Allow this page to read sign-ups from ecomforges. <button type="button" class="small primary" data-act="sync-now">Allow and sync</button>`;
+    else if (st.state === "error") line = `<span class="chip kia">Not syncing</span> ${esc(st.msg)}`;
+    else if (st.state === "off") line = `<span class="chip">Off</span> ${esc(st.msg)}`;
+    else line = `<span class="chip">Starting</span> Checking for sign-ups…`;
+    return `<div class="stack" style="gap:6px;font-size:.88rem"><div>${line} ${st.state === "ok" || st.state === "error" ? `<button type="button" class="small" data-act="sync-now">Check now</button>` : ""}</div>${link ? `<div class="hint">Sign-up link: ${link}</div>` : ""}</div>`;
+  }
   function adminDraw() {
     const D = drawState(); const complete = D.duos.filter((x) => x.p2).length;
     const poolText = D.pool.map((p) => p.name).join("\n");
+    if (!("pool-text" in S.draft)) S.poolBase = D.pool.map((p) => p.id);
+    const T = seedState();
     return `
       <section class="panel"><div class="panel-head"><h2>Duo draw · player pool</h2><span class="hint">One in-game name per line. Spin from the <a href="#draw">Duo draw</a> tab.</span></div>
         <form id="pool-form" class="stack">
+          <div class="panel" style="padding:12px;background:var(--panel-2)" data-sync-status>${syncStatusHtml()}</div>
           <textarea id="pool-text" style="min-height:160px" placeholder="Player names, one per line">${esc(draft("pool-text", poolText))}</textarea>
           <div class="form-actions"><button class="primary" type="submit">Save pool</button><span class="hint">Players already drawn into a duo can't be removed.</span></div>
         </form>
         <div class="form-actions" style="margin-top:14px">
-          <button class="primary" data-act="send-duos" ${complete < 2 || (S.bracket?.locked && !S.bracket?.example) ? "disabled" : ""}>Send ${complete} duos to bracket</button>
-          <button class="danger" data-act="reset-draw" ${D.duos.length ? "" : "disabled"}>Restart draw</button>
+          <button class="primary" data-act="start-seed-draw" ${complete < 2 ? "disabled" : ""}>Start bracket draw with ${complete} duos</button>
+          <button data-act="send-duos" ${complete < 2 ? "disabled" : ""}>Skip the wheel · seed in draw order</button>
+          <button class="danger" data-act="reset-draw" ${D.duos.length ? "" : "disabled"}>Restart duo draw</button>
         </div>
-        <p class="hint" style="margin-top:8px">${S.bracket?.locked && !S.bracket?.example ? "Unlock the bracket in Admin first. " : ""}Sending replaces the bracket's duos and clears its results. Duos are seeded in draw order; use Random draw in Admin to reshuffle seeds.</p>
+        <p class="hint" style="margin-top:8px">The bracket draw puts these duos on a second wheel; each spin places one duo into the next bracket slot, and the finished order replaces the bracket's duos and results. ${T.entries.length ? `Bracket draw in progress: ${T.order.length} of ${T.entries.length} placed.` : ""}</p>
       </section>`;
   }
 
   function adminResults() {
     const c = compute();
-    if (!c) return `<section class="panel"><div class="panel-head"><h2>Results</h2></div><p class="hint">Results open once the bracket has at least two duos.</p></section>`;
+    if (!c) return `<section class="panel"><div class="panel-head"><h2>Results & schedule</h2></div><p class="hint">Raid times, maps and results open once the bracket has at least two duos.</p></section>`;
     const rows = c.rounds.map((rd) => {
       const items = rd.filter((m) => m.status !== "bye").map((m) => {
         const chip = m.status === "live" ? `<span class="chip live">Live</span>` : m.status === "done" ? `<span class="chip done">Settled</span>` : m.status === "tie" ? `<span class="chip amber">Tie</span>` : `<span class="chip">${validDate(m.res.time) ? esc(shortFmt.format(validDate(m.res.time))) : "Time TBA"}</span>`;
@@ -921,7 +1034,7 @@ body.focus .focus-exit { display: inline-flex; }
       }).join("");
       return items ? `<div class="stack" style="gap:0"><div class="label" style="margin-top:10px">${esc(rd[0].name)}</div>${items}</div>` : "";
     }).join("");
-    return `<section class="panel"><div class="panel-head"><h2>Results</h2><span class="hint">Enter loot, map, time and live status. Everyone sees changes instantly.</span></div>${rows}</section>`;
+    return `<section class="panel"><div class="panel-head"><h2>Results & schedule</h2><span class="hint">Set each raid's time and map, mark it live, and enter loot. Everyone sees changes instantly.</span></div>${rows}</section>`;
   }
 
   // ---------- modal ----------
@@ -966,15 +1079,15 @@ body.focus .focus-exit { display: inline-flex; }
 
   // ---------- events ----------
   document.addEventListener("input", (e) => {
-    const el = e.target; if (el.id && /^(pool-|cfg-|add-|m-|sn-)/.test(el.id)) S.draft[el.id] = el.type === "checkbox" ? el.checked : el.value;
+    const el = e.target; if (el.id && /^(pool-|cfg-|add-|m-|st-)/.test(el.id)) S.draft[el.id] = el.type === "checkbox" ? el.checked : el.value;
     const m = el.id && el.id.match(/^hof-(\d+)-(\w+)$/); if (m && S.hofRows && S.hofRows[+m[1]]) S.hofRows[+m[1]][m[2]] = el.value;
   });
   document.addEventListener("change", (e) => {
-    const el = e.target; if (el.id && /^(pool-|cfg-|add-|m-|sn-)/.test(el.id)) S.draft[el.id] = el.type === "checkbox" ? el.checked : el.value;
-    if (el.dataset && el.dataset.team && el.id.startsWith("sn-") && S.isAdmin && S.db) {
-      const name = el.value.trim(); delete S.draft[el.id];
+    const el = e.target; if (el.id && /^(pool-|cfg-|add-|m-|st-)/.test(el.id)) S.draft[el.id] = el.type === "checkbox" ? el.checked : el.value;
+    if (el.dataset && el.dataset.team && el.dataset.field && S.isAdmin && S.db) {
+      const val = el.value.trim(); const f = el.dataset.field; delete S.draft[el.id];
       const teams = teamsCopy(); const t = teams.find((x) => x.id === el.dataset.team);
-      if (t && name && name !== t.name) { t.name = name; saveBracket({ teams }, "Duo renamed"); }
+      if (t && (val || f !== "name") && val !== (t[f] || "")) { t[f] = val; saveBracket({ teams }, f === "name" ? "Duo renamed" : "Players updated"); }
     }
   });
   document.addEventListener("focusout", () => { setTimeout(() => { if (pendingRender) render(); }, 0); });
@@ -1001,13 +1114,14 @@ body.focus .focus-exit { display: inline-flex; }
       render(); return;
     }
     if (act === "focus") { document.body.classList.toggle("focus"); setTimeout(drawWheel, 50); return; }
-    if (!S.db) return;
-    if (act === "vote") {
-      const id = el.dataset.team; const mine = (S.votes.find((v) => v.id === S.uid) || {}).teamId;
-      const ref = S.db.doc("votes/" + S.uid);
-      queueWrite(() => (mine === id ? ref.delete() : ref.set({ teamId: id, at: new Date().toISOString() })), mine === id ? "Pick removed" : "Pick saved");
+    if (act === "copy-link") {
+      const url = cfg().registerUrl || "";
+      const done = () => toast("Sign-up link copied");
+      try { navigator.clipboard.writeText(url).then(done, () => toast(url)); } catch { toast(url); }
       return;
     }
+    if (act === "sync-now") { syncNow(true); return; }
+    if (!S.db) return;
     if (!S.isAdmin) return;
     const teams = teamsCopy();
     if (act === "hof-add") { const rows = hofRows(); rows.push({ season: `Season ${Math.max(1, (cfg().season || 2) - 1)}`, title: el.dataset.title, team: "", players: "", note: "" }); render(); return; }
@@ -1030,10 +1144,28 @@ body.focus .focus-exit { display: inline-flex; }
     } else if (act === "reset-draw") {
       if (!arm(el)) return; const D = drawState();
       queueWrite(() => S.db.doc("draw/main").set({ pool: D.pool, duos: [], spin: null, updatedAt: new Date().toISOString() }), "Draw restarted");
+    } else if (act === "start-seed-draw") {
+      const D = drawState(); const done = D.duos.filter((x) => x.p2); if (done.length < 2) return;
+      const T = seedState(); if (T.order.length && !arm(el)) return;
+      const entries = done.map((x) => { const p1 = pname(D, x.p1), p2 = pname(D, x.p2); return { id: x.id, name: x.name, p1, p2, label: entryLabel(x.name, p1, p2) }; });
+      queueWrite(() => S.db.doc("seeddraw/main").set({ entries, order: [], spin: null, updatedAt: new Date().toISOString() }), "Bracket draw ready").then(() => { location.hash = "bracket-draw"; });
+    } else if (act === "seed-spin") {
+      const T = seedState(); if (!T.remaining.length || S.animating) return;
+      const pick = T.remaining[randInt(T.remaining.length)];
+      const order = [...T.order, pick.id];
+      const spin = { id: "b" + rid() + Date.now().toString(36), at: new Date().toISOString(), wheel: T.remaining.map((e) => ({ id: e.id, name: e.label })), pick: pick.id, turns: 5 + randInt(3) };
+      queueWrite(() => S.db.doc("seeddraw/main").set({ ...T.d, order, spin, updatedAt: spin.at }));
+      if (order.length === T.entries.length) {
+        const nt = order.map((id) => { const e = T.byId.get(id); return { id: e.id, name: e.name, p1: e.p1, p2: e.p2 }; });
+        queueWrite(() => S.db.doc("bracket/main").set({ teams: nt, matches: {}, locked: true, example: false, updatedAt: new Date().toISOString() }));
+      }
+    } else if (act === "seed-undo") {
+      const T = seedState(); if (!T.order.length) return;
+      queueWrite(() => S.db.doc("seeddraw/main").set({ ...T.d, order: T.order.slice(0, -1), spin: null, updatedAt: new Date().toISOString() }), "Last pick undone");
     } else if (act === "send-duos") {
       const D = drawState(); const done = D.duos.filter((x) => x.p2);
-      if (done.length < 2 || (S.bracket?.locked && !S.bracket?.example)) return;
-      if ((S.bracket?.teams || []).length && !arm(el)) return;
+      if (done.length < 2) return;
+      if ((S.bracket?.teams || []).length && !S.bracket?.example && !arm(el)) return;
       const nt = done.map((x) => ({ id: x.id, name: x.name, p1: pname(D, x.p1), p2: pname(D, x.p2) }));
       saveBracket({ teams: nt, matches: {}, locked: false, example: false }, `${nt.length} duos sent to the bracket`);
     } else if (act === "seed-up" || act === "seed-down") {
@@ -1059,7 +1191,8 @@ body.focus .focus-exit { display: inline-flex; }
     if (f.id === "pool-form" && S.isAdmin) {
       const D = drawState();
       const names = $("#pool-text").value.split("\n").map((x) => x.trim()).filter(Boolean);
-      const left = D.pool.slice(); const pool = [];
+      const base = new Set(S.poolBase || D.pool.map((p) => p.id));
+      const left = D.pool.filter((p) => base.has(p.id)); const arrived = D.pool.filter((p) => !base.has(p.id)); const pool = [];
       for (const nm of names) {
         const i = left.findIndex((p) => p.name === nm);
         if (i >= 0) pool.push(left.splice(i, 1)[0]); else pool.push({ id: "p" + rid(), name: nm });
@@ -1067,7 +1200,8 @@ body.focus .focus-exit { display: inline-flex; }
       const used = new Set(D.duos.flatMap((x) => [x.p1, x.p2]).filter(Boolean));
       const lost = left.filter((p) => used.has(p.id));
       if (lost.length) { toast(`${lost.map((p) => p.name).join(", ")} is already in a duo. Undo or restart the draw first.`, true); return; }
-      clearDraft("pool-"); document.activeElement && document.activeElement.blur();
+      for (const p of arrived) if (!pool.some((x) => x.name.toLowerCase() === p.name.toLowerCase())) pool.push(p);
+      clearDraft("pool-"); S.poolBase = null; document.activeElement && document.activeElement.blur();
       queueWrite(() => S.db.doc("draw/main").set({ ...D.d, pool, duos: D.duos, spin: D.spin, updatedAt: new Date().toISOString() }), `Pool saved · ${pool.length} players`);
     } else if (f.id === "add-team" && S.isAdmin) {
       const g = (id) => $("#" + id).value.trim();
@@ -1080,7 +1214,7 @@ body.focus .focus-exit { display: inline-flex; }
       const lines = (id) => $("#" + id).value.split("\n").map((s) => s.trim()).filter(Boolean);
       const patch = {
         title: g("cfg-title") || "Haji Duo Tournament", season: parseInt(g("cfg-season"), 10) || 2, game: g("cfg-game"), tagline: g("cfg-tagline"),
-        startsAt: fromLocalInput(g("cfg-starts")), drawAt: fromLocalInput(g("cfg-drawat")), contact: g("cfg-contact"),
+        startsAt: fromLocalInput(g("cfg-starts")), drawAt: fromLocalInput(g("cfg-drawat")), contact: g("cfg-contact"), registerUrl: /^https:\/\//.test(g("cfg-reg")) ? g("cfg-reg") : "",
         prizes: lines("cfg-prizes").map((l) => { const [place, ...rest] = l.split("|"); return { place: place.trim(), reward: rest.join("|").trim() }; }),
         rules: lines("cfg-rules"),
         placeholder: false,
